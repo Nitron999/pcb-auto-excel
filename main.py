@@ -6,8 +6,8 @@ def main(page: ft.Page):
     # Настройки окна программы
     page.title = "Автоматическое сведение накладных - pcb-auto-excel"
     page.theme_mode = ft.ThemeMode.DARK
-    page.window.width = 1000
-    page.window.height = 700
+    page.window_width = 1000
+    page.window_height = 700
     page.padding = 30
 
     processed_df = None
@@ -147,7 +147,7 @@ def main(page: ft.Page):
         height=50, expand=True
     )
 
-    # Построение интерфейса (расставляем всё на экране)
+    # Построение интерфейса
     page.add(
         ft.Text("Автоматическое сведение накладных", size=24, weight=ft.FontWeight.BOLD),
         ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.colors.WHITE54),
