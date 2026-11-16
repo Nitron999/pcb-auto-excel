@@ -13,11 +13,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Устанавливаем Flutter (чтобы Flet не пытался его скачивать с подтверждением)
+      # Устанавливаем именно ту версию Flutter, которую требует Flet
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.6' # Стабильная версия Flutter
+          flutter-version: '3.24.4' # Устанавливаем актуальную версию, Flet сам подтянет нужные пакеты
           channel: 'stable'
 
       - name: Setup Python
@@ -30,11 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 2. Выполняем сборку
       - name: Build Flet App for Windows
-        run: flet build windows
+        shell: bash
+        run: echo "y" | flet build windows
 
-      # 3. Выгружаем готовый результат
       - name: Upload Windows exe
         uses: actions/upload-artifact@v4
         with:
