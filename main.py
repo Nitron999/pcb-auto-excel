@@ -147,7 +147,7 @@ def main(page: ft.Page):
         btn_process.content = ft.Text("▶ СВЕСТИ НАКЛАДНУЮ", weight=ft.FontWeight.BOLD)
         page.update()
 
-    # Кнопки (используем актуальный ft.Button для Flet 1.0+)
+    # Кнопки
     btn_process = ft.Button(
         content=ft.Text("▶ СВЕСТИ НАКЛАДНУЮ", weight=ft.FontWeight.BOLD),
         on_click=process_data,
@@ -176,7 +176,7 @@ def main(page: ft.Page):
     # Построение интерфейса
     page.add(
         ft.Text("Автоматическое сведение накладных", size=24, weight=ft.FontWeight.BOLD),
-        ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.Colors.WHITE54),
+        ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.Colors.WHITE_54),
         ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
         
         ft.Row([posylka_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: posylka_picker.pick_files())]),
