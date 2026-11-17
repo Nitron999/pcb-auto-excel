@@ -54,7 +54,6 @@ def delivery_sort_rank(deliv_val):
     return 5
 
 def detect_summary_columns(df, is_head=True):
-    """Автоматически находит строку заголовков и нужные столбцы в Сводке ПП и Сводке Филиала."""
     header_row_idx = 0
     best_score = -1
 
@@ -90,7 +89,6 @@ def detect_summary_columns(df, is_head=True):
         elif cols["deliv"] is None and any(k in h for k in ['доставк', 'способ', 'отправк', 'транспорт', 'перевоз']):
             cols["deliv"] = idx
 
-    # Резервный поиск по содержимому ячеек, если шапка нестандартная
     data_sample = df.iloc[header_row_idx + 1 : header_row_idx + 80]
     if cols["ps"] is None:
         for c_idx in range(df.shape[1]):
@@ -128,25 +126,24 @@ def detect_summary_columns(df, is_head=True):
 def build_summary_lookup(df, is_head=True):
     cols = detect_summary_columns(df, is_head=is_head)
     start_r = cols["header_row"] + 1
-    sub = df.iloc[start_r:].copy()
+    sub = df.iloc[start_r:].copy().reset_index(drop=True)
 
     ps_col = cols["ps"]
     sub['_PS_clean'] = sub[ps_col].apply(clean_ps)
-    valid = sub[sub['_PS_clean'].str.match(r'^\d{5,7}$')].copy()
+    valid = sub[sub['_PS_clean'].str.match(r'^\d{5,7}$')].copy().reset_index(drop=True)
     duplicates = [str(x) for x in valid[valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()]
 
     lookup = {}
-    for _, row in valid.iterrows():
+    for i in range(len(valid)):
+        row = valid.iloc[i]
         ps = row['_PS_clean']
         entry = lookup.get(ps, {"firma": "", "schet_pp": "", "qty": np.nan, "deliv": ""})
 
-        # Фирма (Заказчик)
         if cols["firma"] is not None and pd.notna(row[cols["firma"]]):
             f_val = str(row[cols["firma"]]).strip()
             if f_val and f_val.lower() != 'nan':
                 entry["firma"] = f_val
 
-        # Счет ПП (4 цифры с ведущим нулем)
         if is_head:
             raw_schet = ""
             if cols["schet_pp"] is not None and pd.notna(row[cols["schet_pp"]]):
@@ -167,13 +164,11 @@ def build_summary_lookup(df, is_head=True):
             if digits and len(digits) <= 4:
                 entry["schet_pp"] = digits.zfill(4)
 
-        # Количество по счету
         if cols["qty"] is not None and pd.notna(row[cols["qty"]]):
             q_val = row[cols["qty"]]
             if str(q_val).strip() != '':
                 entry["qty"] = q_val
 
-        # Способ доставки (строго ДМ, СДЭК, К, Самовывоз)
         deliv_found = ""
         if cols["deliv"] is not None and pd.notna(row[cols["deliv"]]):
             deliv_found = normalize_delivery(row[cols["deliv"]])
@@ -207,7 +202,7 @@ def find_last_block_start(df_raw):
 
 def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     if progress_callback:
-        progress_callback(0.1, "Чтение файлов и поиск последнего блока Посылки...")
+        progress_callback(0.1, "Чтение файлов и поиск незаполненной посылки внизу...")
 
     real_pos = resolve_shortcut(p_pos)
     real_pp = resolve_shortcut(p_pp)
@@ -244,7 +239,7 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             df_block[col_i] = df_block[col_i].astype(object)
 
     if progress_callback:
-        progress_callback(0.55, "Заполнение данных Головы и Филиала...")
+        progress_callback(0.55, "Заполнение данных Головы (ПП) и Филиала...")
 
     stats = {
         "total_rows": len(df_block),
@@ -266,7 +261,7 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
         stats["warnings"].append(f"В Сводке Филиала есть дубликаты PS ({len(filial_duplicates)} шт.): {', '.join(filial_duplicates[:5])}")
 
     current_zone = "head"
-    row_meta = {}
+    row_meta = []
 
     for idx in range(len(df_block)):
         row = df_block.iloc[idx]
@@ -274,20 +269,20 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
         row_joined = " ".join([str(x).upper() for x in row.tolist() if pd.notna(x)])
 
         if "ОТПРАВКА" in row_joined or "ПРИХОД" in row_joined:
-            row_meta[idx] = {"type": "banner_date", "zone": current_zone, "status": "banner_date"}
+            row_meta.append({"idx": idx, "type": "banner_date", "zone": current_zone, "status": "banner_date", "deliv": ""})
             continue
         if first_cell == "ФИЛИАЛ":
             current_zone = "filial"
-            row_meta[idx] = {"type": "banner_filial", "zone": current_zone, "status": "banner_filial"}
+            row_meta.append({"idx": idx, "type": "banner_filial", "zone": current_zone, "status": "banner_filial", "deliv": ""})
             continue
         if first_cell == "ФИРМА":
-            row_meta[idx] = {"type": "header", "zone": current_zone, "status": "header"}
+            row_meta.append({"idx": idx, "type": "header", "zone": current_zone, "status": "header", "deliv": ""})
             continue
 
         ps = clean_ps(row[idx_ps])
         if not ps or not ps.isdigit():
             stats["empty_ps_rows"] += 1
-            row_meta[idx] = {"type": "empty", "zone": current_zone, "status": "empty"}
+            row_meta.append({"idx": idx, "type": "empty", "zone": current_zone, "status": "empty", "deliv": ""})
             continue
 
         in_head = ps in pp_dict
@@ -296,12 +291,10 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
         if in_head and in_filial:
             stats["conflicts_both_sources"] += 1
 
-        # Нормализуем уже имеющуюся доставку, если она была заполнена
         existing_deliv = normalize_delivery(row[idx_deliv])
         if existing_deliv:
             df_block.iat[idx, idx_deliv] = existing_deliv
 
-        # Блок 1: Печатные платы (Голова)
         if current_zone == "head" and in_head:
             info = pp_dict[ps]
             if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
@@ -318,9 +311,8 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             stats["matched_head"] += 1
             final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
             st = "samovyvoz_head" if final_d.upper() == "САМОВЫВОЗ" else "head"
-            row_meta[idx] = {"type": "data", "zone": "head", "status": st, "deliv": final_d}
+            row_meta.append({"idx": idx, "type": "data", "zone": "head", "status": st, "deliv": final_d})
 
-        # Блок 2: Филиал (Электроконнект)
         elif in_filial:
             info = filial_dict[ps]
             if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
@@ -333,9 +325,8 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             stats["matched_filial"] += 1
             final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
             st = "samovyvoz_filial" if final_d.upper() == "САМОВЫВОЗ" else "filial"
-            row_meta[idx] = {"type": "data", "zone": current_zone, "status": st, "deliv": final_d}
+            row_meta.append({"idx": idx, "type": "data", "zone": current_zone, "status": st, "deliv": final_d})
 
-        # Запасной случай, если заказ ПП оказался ниже плашки филиала
         elif in_head:
             info = pp_dict[ps]
             if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
@@ -352,7 +343,7 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             stats["matched_head"] += 1
             final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
             st = "samovyvoz_head" if final_d.upper() == "САМОВЫВОЗ" else "head"
-            row_meta[idx] = {"type": "data", "zone": current_zone, "status": st, "deliv": final_d}
+            row_meta.append({"idx": idx, "type": "data", "zone": current_zone, "status": st, "deliv": final_d})
 
         else:
             has_qty = pd.notna(row[idx_qty]) and str(row[idx_qty]).strip() != ''
@@ -367,12 +358,11 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             else:
                 stats["not_found"] += 1
                 st = "not_found"
-            row_meta[idx] = {"type": "data", "zone": current_zone, "status": st, "deliv": final_d}
+            row_meta.append({"idx": idx, "type": "data", "zone": current_zone, "status": st, "deliv": final_d})
 
     if progress_callback:
-        progress_callback(0.85, "Сортировка строк по очередности: ДМ → СДЭК → К → Самовывоз...")
+        progress_callback(0.85, "Сортировка строк: ДМ → СДЭК → К → Самовывоз...")
 
-    # Сортируем строки внутри каждого подблока (Голова и Филиал) в порядке: ДМ (1), СДЭК (2), К (3), Самовывоз (4)
     sorted_rows = []
     sorted_statuses = {}
     new_idx = 0
@@ -381,53 +371,50 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     filial_data = []
     seen_filial_banner = False
 
-    for idx in range(len(df_block)):
-        meta = row_meta[idx]
+    for meta in row_meta:
+        orig_idx = meta["idx"]
         if meta["type"] in ("banner_date", "header"):
-            sorted_rows.append(df_block.iloc[idx])
+            sorted_rows.append(df_block.iloc[orig_idx].tolist())
             sorted_statuses[new_idx] = meta["status"]
             new_idx += 1
         elif meta["type"] == "banner_filial":
-            # Перед выводом плашки "филиал" сбрасываем отсортированный первый блок (Печатные платы)
             head_data.sort(key=lambda item: delivery_sort_rank(item[1]["deliv"]))
-            for r_series, m in head_data:
-                sorted_rows.append(r_series)
+            for r_list, m in head_data:
+                sorted_rows.append(r_list)
                 sorted_statuses[new_idx] = m["status"]
                 new_idx += 1
             head_data = []
 
-            sorted_rows.append(df_block.iloc[idx])
+            sorted_rows.append(df_block.iloc[orig_idx].tolist())
             sorted_statuses[new_idx] = "banner_filial"
             new_idx += 1
             seen_filial_banner = True
         elif meta["type"] == "data":
             if not seen_filial_banner:
-                head_data.append((df_block.iloc[idx], meta))
+                head_data.append((df_block.iloc[orig_idx].tolist(), meta))
             else:
-                filial_data.append((df_block.iloc[idx], meta))
+                filial_data.append((df_block.iloc[orig_idx].tolist(), meta))
 
-    # Если плашки "филиал" не было, выводим первый блок
     if head_data:
         head_data.sort(key=lambda item: delivery_sort_rank(item[1]["deliv"]))
-        for r_series, m in head_data:
-            sorted_rows.append(r_series)
+        for r_list, m in head_data:
+            sorted_rows.append(r_list)
             sorted_statuses[new_idx] = m["status"]
             new_idx += 1
 
-    # Выводим отсортированный второй блок (Филиал)
     if filial_data:
         filial_data.sort(key=lambda item: delivery_sort_rank(item[1]["deliv"]))
-        for r_series, m in filial_data:
-            sorted_rows.append(r_series)
+        for r_list, m in filial_data:
+            sorted_rows.append(r_list)
             sorted_statuses[new_idx] = m["status"]
             new_idx += 1
 
-    df_result = pd.DataFrame(sorted_rows).reset_index(drop=True)
+    df_result = pd.DataFrame(sorted_rows)
     clean_cols = [str(c) if pd.notna(c) else f"Колонка_{i+1}" for i, c in enumerate(header_row)]
-    df_result.columns = clean_cols[:len(df_result.columns)]
+    df_result.columns = clean_cols[:df_result.shape[1]]
     stats["row_statuses"] = sorted_statuses
 
     if progress_callback:
-        progress_callback(1.0, "Последний блок успешно сведён и отсортирован!")
+        progress_callback(1.0, "Последняя посылка успешно сведена!")
 
     return df_result, stats
