@@ -7,7 +7,7 @@ import pandas as pd
 
 from core.storage import load_settings, save_settings, load_history, add_history_record
 from core.validator import get_file_info, validate_excel_files
-from core.reconciler import run_reconciliation
+from core.reconciler import run_reconciliation, resolve_shortcut
 from core.excel_exporter import export_to_excel
 
 def main(page: ft.Page):
@@ -41,42 +41,65 @@ def main(page: ft.Page):
         snack = ft.SnackBar(
             content=ft.Text(message, color=ft.Colors.WHITE, weight=ft.FontWeight.W_500),
             bgcolor=colors.get(kind, ft.Colors.BLUE_700),
-            duration=5000
+            duration=6000
         )
         page.overlay.append(snack)
         snack.open = True
         page.update()
 
-    def on_pick_posylka(e: ft.FilePickerResultEvent):
-        if e.files:
-            update_file_path("posylka_path", e.files[0].path)
+    # Асинхронные обработчики диалоговых окон (стандарт Flet 1.0+)
+    async def pick_posylka_click(e):
+        files = await picker_posylka.pick_files(allowed_extensions=["xlsx", "xls", "lnk"])
+        if files:
+            update_file_path("posylka_path", files[0].path)
 
-    def on_pick_pp(e: ft.FilePickerResultEvent):
-        if e.files:
-            update_file_path("pp_path", e.files[0].path)
+    async def pick_pp_click(e):
+        files = await picker_pp.pick_files(allowed_extensions=["xlsx", "xls", "lnk"])
+        if files:
+            update_file_path("pp_path", files[0].path)
 
-    def on_pick_filial(e: ft.FilePickerResultEvent):
-        if e.files:
-            update_file_path("filial_path", e.files[0].path)
+    async def pick_filial_click(e):
+        files = await picker_filial.pick_files(allowed_extensions=["xlsx", "xls", "lnk"])
+        if files:
+            update_file_path("filial_path", files[0].path)
 
-    def on_pick_save_dir(e: ft.FilePickerResultEvent):
-        if e.path:
-            settings["save_dir"] = e.path
+    async def pick_save_dir_click(e):
+        directory = await picker_save_dir.get_directory_path()
+        if directory:
+            settings["save_dir"] = directory
             save_settings(settings)
-            txt_save_dir.value = e.path
-            notify(f"Папка сохранения изменена на: {e.path}", "info")
+            txt_save_dir.value = directory
+            notify(f"Папка сохранения изменена на: {directory}", "info")
             page.update()
 
-    def on_save_excel_dialog(e: ft.FilePickerResultEvent):
-        if e.path and state["result_df"] is not None:
-            out_path = e.path if e.path.endswith(".xlsx") else e.path + ".xlsx"
+    async def on_save_click(e):
+        if state["result_df"] is None:
+            notify("Сначала выполните сведение накладных!", "warning")
+            return
+        default_name = f"Посылка_СВЕДЕНО_{datetime.now().strftime('%d.%m.%Y_%H-%M')}.xlsx"
+        save_dir = settings.get("save_dir", os.path.join(os.path.expanduser("~"), "Desktop"))
+        
+        try:
+            chosen_path = await picker_save_file.save_file(
+                dialog_title="Сохранить сведённую накладную",
+                file_name=default_name,
+                initial_directory=save_dir,
+                allowed_extensions=["xlsx"]
+            )
+            if chosen_path:
+                out_path = chosen_path if chosen_path.endswith(".xlsx") else chosen_path + ".xlsx"
+                perform_save(out_path)
+        except Exception:
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir, exist_ok=True)
+            out_path = os.path.join(save_dir, default_name)
             perform_save(out_path)
 
-    picker_posylka = ft.FilePicker(on_result=on_pick_posylka)
-    picker_pp = ft.FilePicker(on_result=on_pick_pp)
-    picker_filial = ft.FilePicker(on_result=on_pick_filial)
-    picker_save_dir = ft.FilePicker(on_result=on_pick_save_dir)
-    picker_save_file = ft.FilePicker(on_result=on_save_excel_dialog)
+    picker_posylka = ft.FilePicker()
+    picker_pp = ft.FilePicker()
+    picker_filial = ft.FilePicker()
+    picker_save_dir = ft.FilePicker()
+    picker_save_file = ft.FilePicker()
     page.services.extend([picker_posylka, picker_pp, picker_filial, picker_save_dir, picker_save_file])
 
     def update_file_path(key: str, new_path: str):
@@ -94,8 +117,9 @@ def main(page: ft.Page):
 
     file_cards_container = ft.Column(spacing=15)
 
-    def build_file_card(title: str, subtitle: str, state_key: str, picker: ft.FilePicker):
-        info = get_file_info(state[state_key])
+    def build_file_card(title: str, subtitle: str, state_key: str, on_browse_click):
+        resolved = resolve_shortcut(state[state_key]) if state[state_key] else ""
+        info = get_file_info(resolved)
         status_color = ft.Colors.GREEN_400 if info["exists"] else ft.Colors.RED_400
         status_icon = ft.Icons.CHECK_CIRCLE if info["exists"] else ft.Icons.ERROR_OUTLINE
 
@@ -142,7 +166,7 @@ def main(page: ft.Page):
                             path_input,
                             ft.Button(
                                 content=ft.Row([ft.Icon(ft.Icons.FOLDER_OPEN, size=18), ft.Text("Обзор")], spacing=6),
-                                on_click=lambda _: picker.pick_files(allowed_extensions=["xlsx", "xls"]),
+                                on_click=on_browse_click,
                                 style=ft.ButtonStyle(bgcolor="#2563EB", color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=8)),
                                 height=44
                             ),
@@ -167,9 +191,9 @@ def main(page: ft.Page):
 
     def refresh_file_cards():
         file_cards_container.controls = [
-            build_file_card("1. Накладная (Посылка)", "Основной файл с пустыми позициями в конце списка", "posylka_path", picker_posylka),
-            build_file_card("2. Сводка ПП (Голова)", "База заказов головного офиса (ООО Печатные платы)", "pp_path", picker_pp),
-            build_file_card("3. Сводка Филиала", "База заказов филиала (ЭЛЕКТРОконнект)", "filial_path", picker_filial)
+            build_file_card("1. Накладная (Посылка)", "Обрабатывается только последний (нижний) блок посылки", "posylka_path", pick_posylka_click),
+            build_file_card("2. Сводка ПП (Голова)", "База заказов головного офиса (ООО Печатные платы)", "pp_path", pick_pp_click),
+            build_file_card("3. Сводка Филиала", "База заказов филиала (ЭЛЕКТРОконнект)", "filial_path", pick_filial_click)
         ]
 
     progress_bar = ft.ProgressBar(value=0, color="#3B82F6", bgcolor="#1E293B", visible=False)
@@ -196,23 +220,14 @@ def main(page: ft.Page):
                 "output_path": saved_file,
                 "status": "Успешно"
             })
-            notify(f"Итоговый Excel сохранён:\n{saved_file}", "success")
+            notify(f"Готовый Excel сохранён:\n{saved_file}", "success")
+            folder = os.path.dirname(saved_file)
+            if os.path.exists(folder):
+                subprocess.Popen(f'explorer /select,"{saved_file}"')
             refresh_dashboard()
             refresh_history()
         except Exception as ex:
             notify(f"Ошибка при сохранении Excel: {str(ex)}", "error")
-
-    def on_save_click(e):
-        if state["result_df"] is None:
-            notify("Сначала выполните сведение накладных!", "warning")
-            return
-        default_name = f"Посылка_СВЕДЕНО_{datetime.now().strftime('%d.%m.%Y')}.xlsx"
-        picker_save_file.save_file(
-            dialog_title="Сохранить сведённую накладную",
-            file_name=default_name,
-            initial_directory=settings.get("save_dir", ""),
-            allowed_extensions=["xlsx"]
-        )
 
     btn_save_excel = ft.Button(
         content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=20), ft.Text("СОХРАНИТЬ ИТОГОВЫЙ EXCEL (.XLSX)", weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
@@ -227,9 +242,12 @@ def main(page: ft.Page):
         if state["is_processing"]:
             return
 
-        is_valid, msg = validate_excel_files(state["posylka_path"], state["pp_path"], state["filial_path"])
-        if not is_valid:
-            notify(msg, "error")
+        real_pos = resolve_shortcut(state["posylka_path"])
+        real_pp = resolve_shortcut(state["pp_path"])
+        real_fil = resolve_shortcut(state["filial_path"])
+
+        if not os.path.exists(real_pos) or not os.path.exists(real_pp) or not os.path.exists(real_fil):
+            notify("Один или несколько файлов не найдены. Проверьте пути к сетевым папкам.", "error")
             return
 
         state["is_processing"] = True
@@ -238,7 +256,7 @@ def main(page: ft.Page):
         progress_bar.visible = True
         progress_bar.value = 0.05
         progress_label.visible = True
-        progress_label.value = "Запуск проверки и чтения таблиц..."
+        progress_label.value = "Поиск последнего блока и чтение таблиц..."
         results_summary_box.visible = False
         warnings_column.controls.clear()
         page.update()
@@ -251,9 +269,9 @@ def main(page: ft.Page):
                     page.update()
 
                 df_res, stats = run_reconciliation(
-                    state["posylka_path"],
-                    state["pp_path"],
-                    state["filial_path"],
+                    real_pos,
+                    real_pp,
+                    real_fil,
                     progress_callback=update_progress
                 )
 
@@ -272,7 +290,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text("Отчёт о сведении накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                                    ft.Text("Отчёт о сведении последнего блока", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                                     ft.Container(
                                         bgcolor="#065F46",
                                         padding=ft.Padding.symmetric(horizontal=12, vertical=6),
@@ -284,7 +302,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 spacing=15,
                                 controls=[
-                                    stat_mini_card("Всего строк", str(stats["total_rows"]), ft.Colors.BLUE_400),
+                                    stat_mini_card("Строк в блоке", str(stats["total_rows"]), ft.Colors.BLUE_400),
                                     stat_mini_card("Голова (ПП)", str(stats["matched_head"]), ft.Colors.GREEN_400),
                                     stat_mini_card("Филиал", str(stats["matched_filial"]), ft.Colors.CYAN_400),
                                     stat_mini_card("Не найдено", str(stats["not_found"]), ft.Colors.RED_400),
@@ -297,20 +315,17 @@ def main(page: ft.Page):
                 )
 
                 if stats["warnings"]:
-                    warnings_column.controls.append(ft.Text("Предупреждения и расхождения:", weight=ft.FontWeight.BOLD, color=ft.Colors.AMBER_400, size=13))
+                    warnings_column.controls.append(ft.Text("Предупреждения и дубликаты:", weight=ft.FontWeight.BOLD, color=ft.Colors.AMBER_400, size=13))
                     for w in stats["warnings"]:
                         warnings_column.controls.append(ft.Text(f"• {w}", color=ft.Colors.AMBER_200, size=12))
 
                 results_summary_box.visible = True
                 btn_save_excel.disabled = False
 
-                if stats["warnings"]:
-                    notify(f"Сведение завершено с предупреждениями ({len(stats['warnings'])}). Найдено совпадений: {total_matched}.", "warning")
-                else:
-                    notify(f"Сведение успешно завершено! Заполнено позиций: {total_matched}.", "success")
+                notify(f"Сведение завершено! Найдено совпадений: {total_matched}. Нажмите «Сохранить итоговый Excel».", "success")
 
             except Exception as ex:
-                notify(f"Критическая ошибка при обработке: {str(ex)}", "error")
+                notify(f"Ошибка при обработке: {str(ex)}", "error")
             finally:
                 state["is_processing"] = False
                 btn_reconcile.disabled = False
@@ -321,7 +336,7 @@ def main(page: ft.Page):
         threading.Thread(target=worker, daemon=True).start()
 
     btn_reconcile = ft.Button(
-        content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=22), ft.Text("СВЕСТИ НАКЛАДНЫЕ", weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
+        content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=22), ft.Text("СВЕСТИ ПОСЛЕДНИЙ БЛОК", weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
         on_click=start_reconciliation_thread,
         style=ft.ButtonStyle(bgcolor="#2563EB", color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=10)),
         height=52,
@@ -396,7 +411,7 @@ def main(page: ft.Page):
         spacing=20,
         controls=[
             ft.Text("Сведение накладных", size=26, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-            ft.Text("Укажите сетевые или локальные пути к таблицам Excel для автоматического заполнения", size=14, color=ft.Colors.WHITE_54),
+            ft.Text("Программа автоматически находит последний блок посылки, заполняет его и выгружает в отдельный Excel-файл", size=14, color=ft.Colors.WHITE_54),
             file_cards_container,
             ft.Row([btn_reconcile, btn_save_excel], spacing=15),
             progress_label,
@@ -410,7 +425,7 @@ def main(page: ft.Page):
         width=320,
         value="result",
         options=[
-            ft.dropdown.Option("result", "Результат сведения (Итоговая таблица)"),
+            ft.dropdown.Option("result", "Результат сведения (Последний блок)"),
             ft.dropdown.Option("posylka", "Исходная Посылка"),
             ft.dropdown.Option("pp", "Сводка ПП (Голова)"),
             ft.dropdown.Option("filial", "Сводка Филиал")
@@ -432,13 +447,20 @@ def main(page: ft.Page):
                     preview_table_container.controls = [ft.Text("Сначала выполните сведение накладных, чтобы увидеть результат.", color=ft.Colors.AMBER_400)]
                     page.update()
                     return
-            elif src == "posylka" and os.path.exists(state["posylka_path"]):
-                df = pd.read_excel(state["posylka_path"])
-            elif src == "pp" and os.path.exists(state["pp_path"]):
-                df = pd.read_excel(state["pp_path"])
-            elif src == "filial" and os.path.exists(state["filial_path"]):
-                df = pd.read_excel(state["filial_path"])
-            else:
+            elif src == "posylka":
+                p = resolve_shortcut(state["posylka_path"])
+                if os.path.exists(p):
+                    df = pd.read_excel(p)
+            elif src == "pp":
+                p = resolve_shortcut(state["pp_path"])
+                if os.path.exists(p):
+                    df = pd.read_excel(p)
+            elif src == "filial":
+                p = resolve_shortcut(state["filial_path"])
+                if os.path.exists(p):
+                    df = pd.read_excel(p)
+
+            if df is None:
                 preview_table_container.controls = [ft.Text("Выбранный файл не найден или не указан.", color=ft.Colors.RED_400)]
                 page.update()
                 return
@@ -576,7 +598,7 @@ def main(page: ft.Page):
                     controls=[
                         ft.Row([
                             txt_save_dir,
-                            ft.Button(content=ft.Text("Выбрать папку"), on_click=lambda _: picker_save_dir.get_directory_path(), height=48)
+                            ft.Button(content=ft.Text("Выбрать папку"), on_click=pick_save_dir_click, height=48)
                         ]),
                         sw_autoload,
                         sw_backup,
@@ -605,16 +627,11 @@ def main(page: ft.Page):
                     spacing=10,
                     controls=[
                         ft.Text("PCB Auto Excel — Автоматическое сведение накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400),
-                        ft.Text("Версия: 2.0 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
+                        ft.Text("Версия: 2.1 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
                         ft.Divider(color="#334155"),
                         ft.Text(
-                            "Программа предназначена для автоматического поиска и заполнения данных о количестве («По счету») "
-                            "и способе доставки («Доставка») в накладных на основе сводных таблиц Головного офиса и Филиала.\n\n"
-                            "Цветовая маркировка в итоговом Excel-файле:\n"
-                            "• Светло-зелёный — данные заполнены из Сводки ПП (Голова).\n"
-                            "• Светло-синий — данные заполнены из Сводки Филиала.\n"
-                            "• Жёлтый — заказ найден в обеих сводках (приоритет отдан Голове).\n"
-                            "• Светло-красный — заказ PS не найден ни в одной из сводок.",
+                            "Программа автоматически находит последний (нижний) блок посылки, заполняет «По счету» и «Доставка» "
+                            "из сводок Головного офиса и Филиала, и формирует отдельный оформленный Excel-файл по корпоративному стандарту.",
                             size=14,
                             color=ft.Colors.WHITE_70
                         )
