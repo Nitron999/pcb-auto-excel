@@ -1,12 +1,13 @@
-﻿import pandas as pd
+import pandas as pd
 import numpy as np
 
 def clean_ps(series):
     return (
-        series.astype(str)
+        series.fillna('')
+        .astype(str)
         .str.strip()
         .str.replace(r'\.0$', '', regex=True)
-        .replace({'nan': '', 'None': '', 'NaN': ''})
+        .replace({'nan': '', 'None': '', 'NaN': '', '<NA>': ''})
     )
 
 def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
@@ -20,17 +21,20 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     if progress_callback:
         progress_callback(0.3, "Анализ структуры и поиск дубликатов в сводках...")
 
+    # Подготовка ключа PS в Посылке
     df_posylka['_PS_clean'] = clean_ps(df_posylka['PS'])
 
+    # Подготовка Сводки ПП (Голова): 2 - PS, 4 - По счету, 14 - Доставка
     df_pp['_PS_clean'] = clean_ps(df_pp[2])
     df_pp_valid = df_pp[df_pp['_PS_clean'] != ''].copy()
-    pp_duplicates = df_pp_valid[df_pp_valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()
+    pp_duplicates = [str(x) for x in df_pp_valid[df_pp_valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()]
     df_pp_unique = df_pp_valid.drop_duplicates(subset=['_PS_clean'], keep='last')
     pp_dict = df_pp_unique.set_index('_PS_clean').to_dict('index')
 
+    # Подготовка Сводки Филиала: 4 - PS, 7 - По счету, 1 - Доставка
     df_filial['_PS_clean'] = clean_ps(df_filial[4])
     df_filial_valid = df_filial[df_filial['_PS_clean'] != ''].copy()
-    filial_duplicates = df_filial_valid[df_filial_valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()
+    filial_duplicates = [str(x) for x in df_filial_valid[df_filial_valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()]
     df_filial_unique = df_filial_valid.drop_duplicates(subset=['_PS_clean'], keep='last')
     filial_dict = df_filial_unique.set_index('_PS_clean').to_dict('index')
 
@@ -51,21 +55,21 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     }
 
     if pp_duplicates:
-        stats["warnings"].append(f"В Сводке ПП найдены дубликаты PS ({len(pp_duplicates)} шт.): {', '.join(pp_duplicates[:5])}...")
+        stats["warnings"].append(f"В Сводке ПП найдены дубликаты PS ({len(pp_duplicates)} шт.): {', '.join(pp_duplicates[:5])}")
     if filial_duplicates:
-        stats["warnings"].append(f"В Сводке Филиала найдены дубликаты PS ({len(filial_duplicates)} шт.): {', '.join(filial_duplicates[:5])}...")
+        stats["warnings"].append(f"В Сводке Филиала найдены дубликаты PS ({len(filial_duplicates)} шт.): {', '.join(filial_duplicates[:5])}")
 
     pos_dups = df_posylka[df_posylka['_PS_clean'] != '']
-    pos_dup_list = pos_dups[pos_dups.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()
+    pos_dup_list = [str(x) for x in pos_dups[pos_dups.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()]
     if pos_dup_list:
         stats["warnings"].append(f"В самой Посылке повторяются номера PS ({len(pos_dup_list)} шт.): {', '.join(pos_dup_list[:5])}")
 
     total = len(df_posylka)
     for idx, row in df_posylka.iterrows():
-        if progress_callback and idx % 50 == 0:
+        if progress_callback and isinstance(idx, int) and idx % 50 == 0:
             progress_callback(0.5 + 0.4 * (idx / max(total, 1)), f"Обработано строк: {idx} из {total}")
 
-        ps = row['_PS_clean']
+        ps = str(row['_PS_clean']).strip()
         if not ps:
             stats["empty_ps_rows"] += 1
             continue
