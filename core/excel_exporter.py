@@ -18,13 +18,13 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
     ws = wb.active
     ws.title = "Сведенная посылка"
 
-    # Заливки точно как на образцах
+    # Заливки по образцу
     fill_header_teal = PatternFill(start_color="008080", end_color="008080", fill_type="solid")
     fill_header_yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     fill_filial_banner = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-    fill_samovyvoz_head = PatternFill(start_color="FF99CC", end_color="FF99CC", fill_type="solid")   # Розовый (Первый блок ПП)
-    fill_samovyvoz_filial = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid") # Оранжевый (Второй блок Филиал)
-    fill_not_found = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+    fill_samovyvoz_head = PatternFill(start_color="FF99CC", end_color="FF99CC", fill_type="solid")   # Розовый (Печатные платы)
+    fill_samovyvoz_filial = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid") # Оранжевый (Филиал)
+    fill_not_found = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")        # Мягкий персиковый только если PS не найден
 
     # Шрифты (Calibri 11 Bold)
     font_header_black = Font(name="Calibri", size=11, bold=True, color="000000")
@@ -34,7 +34,7 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
     font_red_bold = Font(name="Calibri", size=11, bold=True, color="FF0000")
     font_blue_bold = Font(name="Calibri", size=11, bold=True, color="0000FF")
 
-    # Жирная чёрная граница для всех ячеек
+    # Жирная чёрная граница для всей таблицы
     thick_black_border = Border(
         left=Side(style='medium', color='000000'),
         right=Side(style='medium', color='000000'),
@@ -58,7 +58,6 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
             cell.fill = fill_header_teal
             cell.font = font_header_black
 
-    # Индексы колонок
     col_idx_firma = 1
     col_idx_schet_pp = next((i + 1 for i, c in enumerate(headers) if "Счет пп" in str(c)), 3)
     col_idx_otgruzit = next((i + 1 for i, c in enumerate(headers) if "Отгрузить" in str(c)), 7)
@@ -76,7 +75,7 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.border = thick_black_border
 
-            # Форматируем "Счет пп" как текст с сохранением ведущего нуля (0682)
+            # Сохраняем ведущий ноль в "Счет пп" (например, 0682)
             if c_idx == col_idx_schet_pp and cell.value is not None:
                 val_s = str(cell.value).strip()
                 if val_s.endswith('.0'):
@@ -95,7 +94,6 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
                     cell.font = font_white_bold
                     cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
-                # Фоновая заливка строки
                 if status == "samovyvoz_head":
                     cell.fill = fill_samovyvoz_head
                 elif status == "samovyvoz_filial":
@@ -103,7 +101,6 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
                 elif status == "not_found":
                     cell.fill = fill_not_found
 
-                # Шрифт и выравнивание по колонкам
                 if c_idx == col_idx_firma:
                     cell.font = font_black_bold
                     cell.alignment = Alignment(horizontal="left", vertical="center")
