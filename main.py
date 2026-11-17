@@ -6,7 +6,7 @@ import flet as ft
 import pandas as pd
 
 from core.storage import load_settings, save_settings, load_history, add_history_record
-from core.validator import get_file_info, validate_excel_files
+from core.validator import get_file_info
 from core.reconciler import run_reconciliation, resolve_shortcut
 from core.excel_exporter import export_to_excel
 
@@ -47,7 +47,6 @@ def main(page: ft.Page):
         snack.open = True
         page.update()
 
-    # Асинхронные обработчики диалоговых окон (стандарт Flet 1.0+)
     async def pick_posylka_click(e):
         files = await picker_posylka.pick_files(allowed_extensions=["xlsx", "xls", "lnk"])
         if files:
@@ -74,14 +73,14 @@ def main(page: ft.Page):
 
     async def on_save_click(e):
         if state["result_df"] is None:
-            notify("Сначала выполните сведение накладных!", "warning")
+            notify("Сначала выполните сведение посылки!", "warning")
             return
         default_name = f"Посылка_СВЕДЕНО_{datetime.now().strftime('%d.%m.%Y_%H-%M')}.xlsx"
         save_dir = settings.get("save_dir", os.path.join(os.path.expanduser("~"), "Desktop"))
         
         try:
             chosen_path = await picker_save_file.save_file(
-                dialog_title="Сохранить сведённую накладную",
+                dialog_title="Сохранить сведённую посылку",
                 file_name=default_name,
                 initial_directory=save_dir,
                 allowed_extensions=["xlsx"]
@@ -191,7 +190,7 @@ def main(page: ft.Page):
 
     def refresh_file_cards():
         file_cards_container.controls = [
-            build_file_card("1. Накладная (Посылка)", "Обрабатывается только последний (нижний) блок посылки", "posylka_path", pick_posylka_click),
+            build_file_card("1. Накладная (Посылка)", "Заполняется нижняя (незаполненная) посылка: оба блока ПП и Филиал", "posylka_path", pick_posylka_click),
             build_file_card("2. Сводка ПП (Голова)", "База заказов головного офиса (ООО Печатные платы)", "pp_path", pick_pp_click),
             build_file_card("3. Сводка Филиала", "База заказов филиала (ЭЛЕКТРОконнект)", "filial_path", pick_filial_click)
         ]
@@ -256,7 +255,7 @@ def main(page: ft.Page):
         progress_bar.visible = True
         progress_bar.value = 0.05
         progress_label.visible = True
-        progress_label.value = "Поиск последнего блока и чтение таблиц..."
+        progress_label.value = "Поиск незаполненной посылки и чтение таблиц..."
         results_summary_box.visible = False
         warnings_column.controls.clear()
         page.update()
@@ -290,7 +289,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.Text("Отчёт о сведении последнего блока", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                                    ft.Text("Отчёт о сведении последней посылки", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                                     ft.Container(
                                         bgcolor="#065F46",
                                         padding=ft.Padding.symmetric(horizontal=12, vertical=6),
@@ -302,8 +301,8 @@ def main(page: ft.Page):
                             ft.Row(
                                 spacing=15,
                                 controls=[
-                                    stat_mini_card("Строк в блоке", str(stats["total_rows"]), ft.Colors.BLUE_400),
-                                    stat_mini_card("Голова (ПП)", str(stats["matched_head"]), ft.Colors.GREEN_400),
+                                    stat_mini_card("Всего строк", str(stats["total_rows"]), ft.Colors.BLUE_400),
+                                    stat_mini_card("Печатные платы", str(stats["matched_head"]), ft.Colors.GREEN_400),
                                     stat_mini_card("Филиал", str(stats["matched_filial"]), ft.Colors.CYAN_400),
                                     stat_mini_card("Не найдено", str(stats["not_found"]), ft.Colors.RED_400),
                                     stat_mini_card("Дубликаты", str(stats["duplicates_in_summaries"]), ft.Colors.AMBER_400),
@@ -322,7 +321,7 @@ def main(page: ft.Page):
                 results_summary_box.visible = True
                 btn_save_excel.disabled = False
 
-                notify(f"Сведение завершено! Найдено совпадений: {total_matched}. Нажмите «Сохранить итоговый Excel».", "success")
+                notify(f"Сведение завершено! Заполнено позиций: {total_matched}. Нажмите «Сохранить итоговый Excel».", "success")
 
             except Exception as ex:
                 notify(f"Ошибка при обработке: {str(ex)}", "error")
@@ -336,7 +335,7 @@ def main(page: ft.Page):
         threading.Thread(target=worker, daemon=True).start()
 
     btn_reconcile = ft.Button(
-        content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=22), ft.Text("СВЕСТИ ПОСЛЕДНИЙ БЛОК", weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
+        content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=22), ft.Text("СВЕСТИ ПОСЛЕДНЮЮ ПОСЫЛКУ", weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.CENTER),
         on_click=start_reconciliation_thread,
         style=ft.ButtonStyle(bgcolor="#2563EB", color=ft.Colors.WHITE, shape=ft.RoundedRectangleBorder(radius=10)),
         height=52,
@@ -411,7 +410,7 @@ def main(page: ft.Page):
         spacing=20,
         controls=[
             ft.Text("Сведение накладных", size=26, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-            ft.Text("Программа автоматически находит последний блок посылки, заполняет его и выгружает в отдельный Excel-файл", size=14, color=ft.Colors.WHITE_54),
+            ft.Text("Программа находит нижнюю незаполненную посылку (блоки Печатные платы и Филиал) и выгружает готовый Excel-файл", size=14, color=ft.Colors.WHITE_54),
             file_cards_container,
             ft.Row([btn_reconcile, btn_save_excel], spacing=15),
             progress_label,
@@ -425,7 +424,7 @@ def main(page: ft.Page):
         width=320,
         value="result",
         options=[
-            ft.dropdown.Option("result", "Результат сведения (Последний блок)"),
+            ft.dropdown.Option("result", "Результат сведения (Последняя посылка)"),
             ft.dropdown.Option("posylka", "Исходная Посылка"),
             ft.dropdown.Option("pp", "Сводка ПП (Голова)"),
             ft.dropdown.Option("filial", "Сводка Филиал")
@@ -444,7 +443,7 @@ def main(page: ft.Page):
             if src == "result":
                 df = state["result_df"]
                 if df is None:
-                    preview_table_container.controls = [ft.Text("Сначала выполните сведение накладных, чтобы увидеть результат.", color=ft.Colors.AMBER_400)]
+                    preview_table_container.controls = [ft.Text("Сначала выполните сведение посылки, чтобы увидеть результат.", color=ft.Colors.AMBER_400)]
                     page.update()
                     return
             elif src == "posylka":
@@ -627,11 +626,11 @@ def main(page: ft.Page):
                     spacing=10,
                     controls=[
                         ft.Text("PCB Auto Excel — Автоматическое сведение накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400),
-                        ft.Text("Версия: 2.1 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
+                        ft.Text("Версия: 2.2 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
                         ft.Divider(color="#334155"),
                         ft.Text(
-                            "Программа автоматически находит последний (нижний) блок посылки, заполняет «По счету» и «Доставка» "
-                            "из сводок Головного офиса и Филиала, и формирует отдельный оформленный Excel-файл по корпоративному стандарту.",
+                            "Программа находит нижнюю незаполненную посылку (оба блока: Печатные платы и Филиал Электроконнект), "
+                            "заполняет «Фирма», «Счет пп», «По счету», «ОТК» и «Доставка» (ДМ, СДЭК, К, Самовывоз) и сохраняет оформленный Excel-файл.",
                             size=14,
                             color=ft.Colors.WHITE_70
                         )
