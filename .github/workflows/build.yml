@@ -13,10 +13,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Устанавливаем правильную версию Flutter (выше 3.24.0, как просит Flet)
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.6'
+          flutter-version: '3.24.4'
           channel: 'stable'
 
       - name: Setup Python
@@ -29,7 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Добавляем переменную окружения PYTHONIOENCODING=utf-8, чтобы галочки и эмодзи не крашили консоль
+      # Кодировка UTF-8 оставлена, чтобы зеленые галочки не ломали консоль
       - name: Build Flet App for Windows
         env:
           PYTHONIOENCODING: utf-8
