@@ -17,6 +17,8 @@ def resolve_shortcut(path):
     return clean
 
 def clean_ps(val):
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return ''
     s = str(val).strip()
     if s.lower() in ('nan', 'none', 'nat', '<na>', ''):
         return ''
@@ -26,7 +28,7 @@ def clean_ps(val):
     return digits if len(digits) >= 5 else s
 
 def normalize_delivery(raw_val):
-    if pd.isna(raw_val):
+    if raw_val is None or (isinstance(raw_val, float) and np.isnan(raw_val)):
         return ""
     s = str(raw_val).strip().upper()
     if not s or s in ('NAN', 'NONE', 'NAT'):
@@ -54,11 +56,13 @@ def delivery_sort_rank(deliv_val):
     return 5
 
 def detect_summary_columns(df, is_head=True):
+    num_rows, num_cols = df.shape
     header_row_idx = 0
     best_score = -1
 
-    for r_idx in range(min(15, len(df))):
-        row_strs = [str(x).strip().lower() for x in df.iloc[r_idx].tolist() if pd.notna(x)]
+    for r_idx in range(min(15, num_rows)):
+        row_vals = df.iloc[r_idx].tolist()
+        row_strs = [str(x).strip().lower() for x in row_vals if pd.notna(x)]
         score = 0
         for cell in row_strs:
             if cell == 'ps' or 'ps' in cell:
@@ -71,7 +75,8 @@ def detect_summary_columns(df, is_head=True):
             best_score = score
             header_row_idx = r_idx
 
-    headers = [str(x).strip().lower() if pd.notna(x) else "" for x in df.iloc[header_row_idx].tolist()]
+    raw_headers = df.iloc[header_row_idx].tolist()
+    headers = [str(x).strip().lower() if pd.notna(x) else "" for x in raw_headers]
     cols = {"header_row": header_row_idx, "ps": None, "firma": None, "schet_pp": None, "qty": None, "deliv": None}
 
     for idx, h in enumerate(headers):
@@ -89,37 +94,39 @@ def detect_summary_columns(df, is_head=True):
         elif cols["deliv"] is None and any(k in h for k in ['доставк', 'способ', 'отправк', 'транспорт', 'перевоз']):
             cols["deliv"] = idx
 
-    data_sample = df.iloc[header_row_idx + 1 : header_row_idx + 80]
-    if cols["ps"] is None:
-        for c_idx in range(df.shape[1]):
-            vals = data_sample[c_idx].dropna().astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            if len(vals) > 0 and (vals.str.match(r'^\d{6}$').mean() > 0.4):
-                cols["ps"] = c_idx
-                break
-
-    if cols["deliv"] is None:
-        for c_idx in range(df.shape[1]):
-            vals = data_sample[c_idx].dropna().astype(str).str.upper()
-            if len(vals) > 0:
-                hits = vals.apply(lambda v: any(k in v for k in ['ДМ', 'СДЭК', 'САМОВЫВОЗ', 'КУРЬЕР']) or v.strip() == 'К').mean()
-                if hits > 0.15:
-                    cols["deliv"] = c_idx
+    # Безопасный поиск по содержимому через iloc (работает при любом количестве колонок)
+    data_sample = df.iloc[header_row_idx + 1 : min(header_row_idx + 80, num_rows)]
+    if not data_sample.empty:
+        if cols["ps"] is None:
+            for c_idx in range(num_cols):
+                vals = data_sample.iloc[:, c_idx].dropna().astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                if len(vals) > 0 and (vals.str.match(r'^\d{5,7}$').mean() > 0.4):
+                    cols["ps"] = c_idx
                     break
+
+        if cols["deliv"] is None:
+            for c_idx in range(num_cols):
+                vals = data_sample.iloc[:, c_idx].dropna().astype(str).str.upper()
+                if len(vals) > 0:
+                    hits = vals.apply(lambda v: any(k in v for k in ['ДМ', 'СДЭК', 'САМОВЫВОЗ', 'КУРЬЕР']) or v.strip() == 'К').mean()
+                    if hits > 0.15:
+                        cols["deliv"] = c_idx
+                        break
 
     if is_head:
         if cols["ps"] is None:
-            cols["ps"] = 2
+            cols["ps"] = min(2, num_cols - 1)
         if cols["qty"] is None:
-            cols["qty"] = 4
+            cols["qty"] = min(4, num_cols - 1)
         if cols["deliv"] is None:
-            cols["deliv"] = 14
+            cols["deliv"] = min(14, num_cols - 1)
     else:
         if cols["ps"] is None:
-            cols["ps"] = 4
+            cols["ps"] = min(4, num_cols - 1)
         if cols["qty"] is None:
-            cols["qty"] = 7
+            cols["qty"] = min(7, num_cols - 1)
         if cols["deliv"] is None:
-            cols["deliv"] = 1
+            cols["deliv"] = min(1, num_cols - 1)
 
     return cols
 
@@ -127,32 +134,49 @@ def build_summary_lookup(df, is_head=True):
     cols = detect_summary_columns(df, is_head=is_head)
     start_r = cols["header_row"] + 1
     sub = df.iloc[start_r:].copy().reset_index(drop=True)
+    num_cols = sub.shape[1]
 
     ps_col = cols["ps"]
-    sub['_PS_clean'] = sub[ps_col].apply(clean_ps)
-    valid = sub[sub['_PS_clean'].str.match(r'^\d{5,7}$')].copy().reset_index(drop=True)
-    duplicates = [str(x) for x in valid[valid.duplicated(subset=['_PS_clean'], keep=False)]['_PS_clean'].unique().tolist()]
+    firma_col = cols["firma"]
+    schet_col = cols["schet_pp"]
+    qty_col = cols["qty"]
+    deliv_col = cols["deliv"]
 
     lookup = {}
-    for i in range(len(valid)):
-        row = valid.iloc[i]
-        ps = row['_PS_clean']
+    seen_ps = set()
+    duplicates = []
+
+    for i in range(len(sub)):
+        row_vals = sub.iloc[i].tolist()
+        if ps_col is None or ps_col >= len(row_vals):
+            continue
+
+        ps = clean_ps(row_vals[ps_col])
+        if not re.match(r'^\d{5,7}$', ps):
+            continue
+
+        if ps in seen_ps and ps not in duplicates:
+            duplicates.append(ps)
+        seen_ps.add(ps)
+
         entry = lookup.get(ps, {"firma": "", "schet_pp": "", "qty": np.nan, "deliv": ""})
 
-        if cols["firma"] is not None and pd.notna(row[cols["firma"]]):
-            f_val = str(row[cols["firma"]]).strip()
+        # Фирма (Заказчик)
+        if firma_col is not None and firma_col < len(row_vals) and pd.notna(row_vals[firma_col]):
+            f_val = str(row_vals[firma_col]).strip()
             if f_val and f_val.lower() != 'nan':
                 entry["firma"] = f_val
 
+        # Счет ПП (4 цифры с ведущим нулем)
         if is_head:
             raw_schet = ""
-            if cols["schet_pp"] is not None and pd.notna(row[cols["schet_pp"]]):
-                raw_schet = str(row[cols["schet_pp"]]).strip()
+            if schet_col is not None and schet_col < len(row_vals) and pd.notna(row_vals[schet_col]):
+                raw_schet = str(row_vals[schet_col]).strip()
             else:
-                for c_i in range(min(10, len(row))):
-                    if c_i in (ps_col, cols["qty"], cols["deliv"], cols["firma"]):
+                for c_i in range(min(12, len(row_vals))):
+                    if c_i in (ps_col, qty_col, deliv_col, firma_col):
                         continue
-                    v = str(row[c_i]).strip() if pd.notna(row[c_i]) else ""
+                    v = str(row_vals[c_i]).strip() if pd.notna(row_vals[c_i]) else ""
                     if v.endswith('.0'):
                         v = v[:-2]
                     if re.match(r'^0\d{3}$', v):
@@ -164,19 +188,21 @@ def build_summary_lookup(df, is_head=True):
             if digits and len(digits) <= 4:
                 entry["schet_pp"] = digits.zfill(4)
 
-        if cols["qty"] is not None and pd.notna(row[cols["qty"]]):
-            q_val = row[cols["qty"]]
+        # Количество по счету
+        if qty_col is not None and qty_col < len(row_vals) and pd.notna(row_vals[qty_col]):
+            q_val = row_vals[qty_col]
             if str(q_val).strip() != '':
                 entry["qty"] = q_val
 
+        # Способ доставки (строго ДМ, СДЭК, К, Самовывоз)
         deliv_found = ""
-        if cols["deliv"] is not None and pd.notna(row[cols["deliv"]]):
-            deliv_found = normalize_delivery(row[cols["deliv"]])
+        if deliv_col is not None and deliv_col < len(row_vals) and pd.notna(row_vals[deliv_col]):
+            deliv_found = normalize_delivery(row_vals[deliv_col])
         if not deliv_found:
-            for c_i in range(len(row)):
-                if c_i in (ps_col, cols["firma"]):
+            for c_i in range(len(row_vals)):
+                if c_i in (ps_col, firma_col):
                     continue
-                cand = normalize_delivery(row[c_i])
+                cand = normalize_delivery(row_vals[c_i])
                 if cand:
                     deliv_found = cand
                     break
@@ -234,9 +260,9 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     start_idx = find_last_block_start(df_pos_raw)
     df_block = df_pos_raw.iloc[start_idx:].copy().reset_index(drop=True)
 
-    for col_i in [idx_firma, idx_schet_pp, idx_otk, idx_deliv]:
-        if col_i < df_block.shape[1]:
-            df_block[col_i] = df_block[col_i].astype(object)
+    # Переводим все столбцы в object для безопасной записи текста и чисел
+    df_block = df_block.astype(object)
+    num_block_cols = df_block.shape[1]
 
     if progress_callback:
         progress_callback(0.55, "Заполнение данных Головы (ПП) и Филиала...")
@@ -264,9 +290,9 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     row_meta = []
 
     for idx in range(len(df_block)):
-        row = df_block.iloc[idx]
-        first_cell = str(row[0]).strip().upper() if pd.notna(row[0]) else ""
-        row_joined = " ".join([str(x).upper() for x in row.tolist() if pd.notna(x)])
+        row_vals = df_block.iloc[idx].tolist()
+        first_cell = str(row_vals[0]).strip().upper() if len(row_vals) > 0 and pd.notna(row_vals[0]) else ""
+        row_joined = " ".join([str(x).upper() for x in row_vals if pd.notna(x)])
 
         if "ОТПРАВКА" in row_joined or "ПРИХОД" in row_joined:
             row_meta.append({"idx": idx, "type": "banner_date", "zone": current_zone, "status": "banner_date", "deliv": ""})
@@ -279,7 +305,7 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             row_meta.append({"idx": idx, "type": "header", "zone": current_zone, "status": "header", "deliv": ""})
             continue
 
-        ps = clean_ps(row[idx_ps])
+        ps = clean_ps(row_vals[idx_ps]) if idx_ps < len(row_vals) else ""
         if not ps or not ps.isdigit():
             stats["empty_ps_rows"] += 1
             row_meta.append({"idx": idx, "type": "empty", "zone": current_zone, "status": "empty", "deliv": ""})
@@ -291,64 +317,71 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
         if in_head and in_filial:
             stats["conflicts_both_sources"] += 1
 
-        existing_deliv = normalize_delivery(row[idx_deliv])
-        if existing_deliv:
-            df_block.iat[idx, idx_deliv] = existing_deliv
+        if idx_deliv < num_block_cols:
+            existing_deliv = normalize_delivery(row_vals[idx_deliv])
+            if existing_deliv:
+                df_block.iat[idx, idx_deliv] = existing_deliv
+
+        def is_cell_empty(col_i):
+            if col_i >= num_block_cols:
+                return False
+            v = df_block.iat[idx, col_i]
+            return pd.isna(v) or str(v).strip() == ''
 
         if current_zone == "head" and in_head:
             info = pp_dict[ps]
-            if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
+            if is_cell_empty(idx_firma) and info["firma"]:
                 df_block.iat[idx, idx_firma] = info["firma"]
-            if (pd.isna(row[idx_qty]) or str(row[idx_qty]).strip() == '') and pd.notna(info["qty"]):
+            if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
                 df_block.iat[idx, idx_qty] = info["qty"]
-            if (pd.isna(row[idx_schet_pp]) or str(row[idx_schet_pp]).strip() == '') and info["schet_pp"]:
+            if is_cell_empty(idx_schet_pp) and info["schet_pp"]:
                 df_block.iat[idx, idx_schet_pp] = info["schet_pp"]
-            if pd.isna(row[idx_otk]) or str(row[idx_otk]).strip() == '':
+            if is_cell_empty(idx_otk):
                 df_block.iat[idx, idx_otk] = "ОТК"
-            if (pd.isna(df_block.iat[idx, idx_deliv]) or str(df_block.iat[idx, idx_deliv]).strip() == '') and info["deliv"]:
+            if is_cell_empty(idx_deliv) and info["deliv"]:
                 df_block.iat[idx, idx_deliv] = info["deliv"]
 
             stats["matched_head"] += 1
-            final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
+            final_d = str(df_block.iat[idx, idx_deliv] or "").strip() if idx_deliv < num_block_cols else ""
             st = "samovyvoz_head" if final_d.upper() == "САМОВЫВОЗ" else "head"
             row_meta.append({"idx": idx, "type": "data", "zone": "head", "status": st, "deliv": final_d})
 
         elif in_filial:
             info = filial_dict[ps]
-            if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
+            if is_cell_empty(idx_firma) and info["firma"]:
                 df_block.iat[idx, idx_firma] = info["firma"]
-            if (pd.isna(row[idx_qty]) or str(row[idx_qty]).strip() == '') and pd.notna(info["qty"]):
+            if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
                 df_block.iat[idx, idx_qty] = info["qty"]
-            if (pd.isna(df_block.iat[idx, idx_deliv]) or str(df_block.iat[idx, idx_deliv]).strip() == '') and info["deliv"]:
+            if is_cell_empty(idx_deliv) and info["deliv"]:
                 df_block.iat[idx, idx_deliv] = info["deliv"]
 
             stats["matched_filial"] += 1
-            final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
+            final_d = str(df_block.iat[idx, idx_deliv] or "").strip() if idx_deliv < num_block_cols else ""
             st = "samovyvoz_filial" if final_d.upper() == "САМОВЫВОЗ" else "filial"
             row_meta.append({"idx": idx, "type": "data", "zone": current_zone, "status": st, "deliv": final_d})
 
         elif in_head:
             info = pp_dict[ps]
-            if (pd.isna(row[idx_firma]) or str(row[idx_firma]).strip() == '') and info["firma"]:
+            if is_cell_empty(idx_firma) and info["firma"]:
                 df_block.iat[idx, idx_firma] = info["firma"]
-            if (pd.isna(row[idx_qty]) or str(row[idx_qty]).strip() == '') and pd.notna(info["qty"]):
+            if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
                 df_block.iat[idx, idx_qty] = info["qty"]
-            if (pd.isna(row[idx_schet_pp]) or str(row[idx_schet_pp]).strip() == '') and info["schet_pp"]:
+            if is_cell_empty(idx_schet_pp) and info["schet_pp"]:
                 df_block.iat[idx, idx_schet_pp] = info["schet_pp"]
-            if pd.isna(row[idx_otk]) or str(row[idx_otk]).strip() == '':
+            if is_cell_empty(idx_otk):
                 df_block.iat[idx, idx_otk] = "ОТК"
-            if (pd.isna(df_block.iat[idx, idx_deliv]) or str(df_block.iat[idx, idx_deliv]).strip() == '') and info["deliv"]:
+            if is_cell_empty(idx_deliv) and info["deliv"]:
                 df_block.iat[idx, idx_deliv] = info["deliv"]
 
             stats["matched_head"] += 1
-            final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
+            final_d = str(df_block.iat[idx, idx_deliv] or "").strip() if idx_deliv < num_block_cols else ""
             st = "samovyvoz_head" if final_d.upper() == "САМОВЫВОЗ" else "head"
             row_meta.append({"idx": idx, "type": "data", "zone": current_zone, "status": st, "deliv": final_d})
 
         else:
-            has_qty = pd.notna(row[idx_qty]) and str(row[idx_qty]).strip() != ''
-            has_deliv = pd.notna(df_block.iat[idx, idx_deliv]) and str(df_block.iat[idx, idx_deliv]).strip() != ''
-            final_d = str(df_block.iat[idx, idx_deliv] or "").strip()
+            has_qty = not is_cell_empty(idx_qty)
+            has_deliv = not is_cell_empty(idx_deliv)
+            final_d = str(df_block.iat[idx, idx_deliv] or "").strip() if idx_deliv < num_block_cols else ""
             if has_qty and has_deliv:
                 stats["already_filled"] += 1
                 if final_d.upper() == "САМОВЫВОЗ":
