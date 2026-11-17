@@ -1,4 +1,4 @@
-﻿import os
+import os
 import subprocess
 import threading
 from datetime import datetime
@@ -113,7 +113,7 @@ def main(page: ft.Page):
             bgcolor="#1E293B",
             border_radius=12,
             padding=18,
-            border=ft.border.all(1, "#334155"),
+            border=ft.Border.all(1, "#334155"),
             content=ft.Column(
                 spacing=10,
                 controls=[
@@ -265,7 +265,7 @@ def main(page: ft.Page):
                     bgcolor="#1E293B",
                     border_radius=12,
                     padding=20,
-                    border=ft.border.all(1, "#334155"),
+                    border=ft.Border.all(1, "#334155"),
                     content=ft.Column(
                         spacing=15,
                         controls=[
@@ -275,7 +275,7 @@ def main(page: ft.Page):
                                     ft.Text("Отчёт о сведении накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                                     ft.Container(
                                         bgcolor="#065F46",
-                                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
                                         border_radius=8,
                                         content=ft.Text("ВЫПОЛНЕНО", color="#34D399", weight=ft.FontWeight.BOLD, size=12)
                                     )
@@ -334,7 +334,7 @@ def main(page: ft.Page):
             bgcolor="#0F172A",
             padding=12,
             border_radius=10,
-            border=ft.border.all(1, "#334155"),
+            border=ft.Border.all(1, "#334155"),
             content=ft.Column(
                 spacing=4,
                 controls=[
@@ -370,7 +370,7 @@ def main(page: ft.Page):
                 bgcolor="#1E293B",
                 border_radius=12,
                 padding=20,
-                border=ft.border.all(1, "#334155"),
+                border=ft.Border.all(1, "#334155"),
                 content=ft.Column(
                     spacing=10,
                     controls=[
@@ -461,7 +461,7 @@ def main(page: ft.Page):
             table = ft.DataTable(
                 columns=cols,
                 rows=rows,
-                border=ft.border.all(1, "#334155"),
+                border=ft.Border.all(1, "#334155"),
                 heading_row_color="#1E293B",
                 data_row_min_height=36
             )
@@ -519,7 +519,7 @@ def main(page: ft.Page):
                     bgcolor="#1E293B",
                     border_radius=10,
                     padding=15,
-                    border=ft.border.all(1, "#334155"),
+                    border=ft.Border.all(1, "#334155"),
                     content=ft.Row(
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         controls=[
@@ -570,7 +570,7 @@ def main(page: ft.Page):
                 bgcolor="#1E293B",
                 border_radius=12,
                 padding=20,
-                border=ft.border.all(1, "#334155"),
+                border=ft.Border.all(1, "#334155"),
                 content=ft.Column(
                     spacing=15,
                     controls=[
@@ -600,7 +600,7 @@ def main(page: ft.Page):
                 bgcolor="#1E293B",
                 border_radius=12,
                 padding=25,
-                border=ft.border.all(1, "#334155"),
+                border=ft.Border.all(1, "#334155"),
                 content=ft.Column(
                     spacing=10,
                     controls=[
