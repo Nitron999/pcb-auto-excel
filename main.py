@@ -34,9 +34,9 @@ def main(page: ft.Page):
             save_path = e.path if e.path.endswith('.xlsx') else e.path + '.xlsx'
             try:
                 processed_df.to_excel(save_path, index=False)
-                page.overlay.append(ft.SnackBar(ft.Text(f"Успешно сохранено:\n{save_path}"), bgcolor=ft.colors.GREEN_700, open=True))
+                page.overlay.append(ft.SnackBar(ft.Text(f"Успешно сохранено:\n{save_path}"), bgcolor=ft.Colors.GREEN_700, open=True))
             except Exception as ex:
-                page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка сохранения: {ex}"), bgcolor=ft.colors.RED_700, open=True))
+                page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка сохранения: {ex}"), bgcolor=ft.Colors.RED_700, open=True))
             page.update()
 
     # Невидимые компоненты для диалоговых окон Windows
@@ -47,12 +47,12 @@ def main(page: ft.Page):
     page.services.extend([posylka_picker, pp_picker, filial_picker, save_picker])
 
     # Поля ввода путей
-    posylka_input = ft.TextField(label="1. Путь к файлу: Посылка", expand=True, border_color=ft.colors.BLUE_GREY_700)
-    pp_input = ft.TextField(label="2. Путь к файлу: Сводка ПП (Голова)", expand=True, border_color=ft.colors.BLUE_GREY_700)
-    filial_input = ft.TextField(label="3. Путь к файлу: Сводка Филиал", expand=True, border_color=ft.colors.BLUE_GREY_700)
+    posylka_input = ft.TextField(label="1. Путь к файлу: Посылка", expand=True, border_color=ft.Colors.BLUE_GREY_700)
+    pp_input = ft.TextField(label="2. Путь к файлу: Сводка ПП (Голова)", expand=True, border_color=ft.Colors.BLUE_GREY_700)
+    filial_input = ft.TextField(label="3. Путь к файлу: Сводка Филиал", expand=True, border_color=ft.Colors.BLUE_GREY_700)
 
     # Текстовые поля для результатов
-    stats_text = ft.Text("Голова: 0  |  Филиал: 0", weight=ft.FontWeight.BOLD, size=16, color=ft.colors.GREEN_400)
+    stats_text = ft.Text("Голова: 0  |  Филиал: 0", weight=ft.FontWeight.BOLD, size=16, color=ft.Colors.GREEN_400)
     preview_box = ft.TextField(multiline=True, read_only=True, expand=True, text_size=12, text_style=ft.TextStyle(font_family="Consolas"))
 
     # Логика обработки Excel
@@ -63,7 +63,7 @@ def main(page: ft.Page):
         p_fil = filial_input.value
 
         if not p_pos or not p_pp or not p_fil:
-            page.overlay.append(ft.SnackBar(ft.Text("Пожалуйста, укажите все 3 файла!"), bgcolor=ft.colors.RED_700, open=True))
+            page.overlay.append(ft.SnackBar(ft.Text("Пожалуйста, укажите все 3 файла!"), bgcolor=ft.Colors.RED_700, open=True))
             page.update()
             return
 
@@ -122,10 +122,10 @@ def main(page: ft.Page):
             preview_box.value = preview_csv
             btn_download.disabled = False
             
-            page.overlay.append(ft.SnackBar(ft.Text("Данные успешно сведены!"), bgcolor=ft.colors.GREEN_700, open=True))
+            page.overlay.append(ft.SnackBar(ft.Text("Данные успешно сведены!"), bgcolor=ft.Colors.GREEN_700, open=True))
 
         except Exception as ex:
-            page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка: {str(ex)}"), bgcolor=ft.colors.RED_700, open=True))
+            page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка: {str(ex)}"), bgcolor=ft.Colors.RED_700, open=True))
 
         btn_process.disabled = False
         btn_process.text = "▶ СВЕСТИ НАКЛАДНУЮ"
@@ -135,7 +135,7 @@ def main(page: ft.Page):
     btn_process = ft.ElevatedButton(
         "▶ СВЕСТИ НАКЛАДНУЮ", 
         on_click=process_data,
-        style=ft.ButtonStyle(color=ft.colors.WHITE, bgcolor=ft.colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=8)),
+        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=8)),
         height=50, expand=True
     )
     
@@ -143,25 +143,25 @@ def main(page: ft.Page):
         "📥 СКАЧАТЬ EXCEL", 
         disabled=True,
         on_click=lambda _: save_picker.save_file(allowed_extensions=["xlsx"], file_name="Посылка_СВЕДЕНО.xlsx"),
-        style=ft.ButtonStyle(color=ft.colors.WHITE, bgcolor=ft.colors.GREEN_600, shape=ft.RoundedRectangleBorder(radius=8)),
+        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.GREEN_600, shape=ft.RoundedRectangleBorder(radius=8)),
         height=50, expand=True
     )
 
     # Построение интерфейса
     page.add(
         ft.Text("Автоматическое сведение накладных", size=24, weight=ft.FontWeight.BOLD),
-        ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.colors.WHITE54),
-        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+        ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.Colors.WHITE54),
+        ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
         
         ft.Row([posylka_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: posylka_picker.pick_files())]),
         ft.Row([pp_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: pp_picker.pick_files())]),
         ft.Row([filial_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: filial_picker.pick_files())]),
         
-        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+        ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
         ft.Row([btn_process, ft.Container(width=20), btn_download]),
-        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+        ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
         
-        ft.Row([ft.Text("Результат сведения:", weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400), stats_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Row([ft.Text("Результат сведения:", weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_400), stats_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         preview_box
     )
 
