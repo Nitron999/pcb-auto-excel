@@ -6,8 +6,8 @@ def main(page: ft.Page):
     # Настройки окна программы
     page.title = "Автоматическое сведение накладных - pcb-auto-excel"
     page.theme_mode = ft.ThemeMode.DARK
-    page.window_width = 1000
-    page.window_height = 700
+    page.window.width = 1000
+    page.window.height = 700
     page.padding = 30
 
     processed_df = None
@@ -44,7 +44,7 @@ def main(page: ft.Page):
     pp_picker = ft.FilePicker(on_result=pick_pp_result)
     filial_picker = ft.FilePicker(on_result=pick_filial_result)
     save_picker = ft.FilePicker(on_result=save_file_result)
-    page.overlay.extend([posylka_picker, pp_picker, filial_picker, save_picker])
+    page.services.extend([posylka_picker, pp_picker, filial_picker, save_picker])
 
     # Поля ввода путей
     posylka_input = ft.TextField(label="1. Путь к файлу: Посылка", expand=True, border_color=ft.colors.BLUE_GREY_700)
@@ -153,9 +153,9 @@ def main(page: ft.Page):
         ft.Text("Выбери файлы через проводник или вставь прямой путь", color=ft.colors.WHITE54),
         ft.Divider(height=20, color=ft.colors.TRANSPARENT),
         
-        ft.Row([posylka_input, ft.IconButton(ft.icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: posylka_picker.pick_files())]),
-        ft.Row([pp_input, ft.IconButton(ft.icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: pp_picker.pick_files())]),
-        ft.Row([filial_input, ft.IconButton(ft.icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: filial_picker.pick_files())]),
+        ft.Row([posylka_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: posylka_picker.pick_files())]),
+        ft.Row([pp_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: pp_picker.pick_files())]),
+        ft.Row([filial_input, ft.IconButton(ft.Icons.FOLDER_OPEN, icon_size=30, on_click=lambda _: filial_picker.pick_files())]),
         
         ft.Divider(height=20, color=ft.colors.TRANSPARENT),
         ft.Row([btn_process, ft.Container(width=20), btn_download]),
@@ -165,4 +165,4 @@ def main(page: ft.Page):
         preview_box
     )
 
-ft.app(target=main)
+ft.run(main)
