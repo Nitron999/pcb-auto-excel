@@ -34,12 +34,16 @@ def main(page: ft.Page):
             save_path = e.path if e.path.endswith('.xlsx') else e.path + '.xlsx'
             try:
                 processed_df.to_excel(save_path, index=False)
-                page.overlay.append(ft.SnackBar(ft.Text(f"Успешно сохранено:\n{save_path}"), bgcolor=ft.Colors.GREEN_700, open=True))
+                snack = ft.SnackBar(ft.Text(f"Успешно сохранено:\n{save_path}"), bgcolor=ft.Colors.GREEN_700)
+                page.overlay.append(snack)
+                snack.open = True
             except Exception as ex:
-                page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка сохранения: {ex}"), bgcolor=ft.Colors.RED_700, open=True))
+                snack = ft.SnackBar(ft.Text(f"Ошибка сохранения: {ex}"), bgcolor=ft.Colors.RED_700)
+                page.overlay.append(snack)
+                snack.open = True
             page.update()
 
-    # Невидимые компоненты для диалоговых окон Windows
+    # Диалоговые окна Windows
     posylka_picker = ft.FilePicker(on_result=pick_posylka_result)
     pp_picker = ft.FilePicker(on_result=pick_pp_result)
     filial_picker = ft.FilePicker(on_result=pick_filial_result)
@@ -53,7 +57,20 @@ def main(page: ft.Page):
 
     # Текстовые поля для результатов
     stats_text = ft.Text("Голова: 0  |  Филиал: 0", weight=ft.FontWeight.BOLD, size=16, color=ft.Colors.GREEN_400)
-    preview_box = ft.TextField(multiline=True, read_only=True, expand=True, text_size=12, text_style=ft.TextStyle(font_family="Consolas"))
+    preview_box = ft.TextField(
+        multiline=True,
+        read_only=True,
+        expand=True,
+        text_size=12,
+        text_style=ft.TextStyle(font_family="Consolas")
+    )
+
+    def show_message(text, is_error=False):
+        color = ft.Colors.RED_700 if is_error else ft.Colors.GREEN_700
+        snack = ft.SnackBar(ft.Text(text), bgcolor=color)
+        page.overlay.append(snack)
+        snack.open = True
+        page.update()
 
     # Логика обработки Excel
     def process_data(e):
@@ -63,12 +80,11 @@ def main(page: ft.Page):
         p_fil = filial_input.value
 
         if not p_pos or not p_pp or not p_fil:
-            page.overlay.append(ft.SnackBar(ft.Text("Пожалуйста, укажите все 3 файла!"), bgcolor=ft.Colors.RED_700, open=True))
-            page.update()
+            show_message("Пожалуйста, укажите все 3 файла!", is_error=True)
             return
 
         btn_process.disabled = True
-        btn_process.text = "ОБРАБОТКА..."
+        btn_process.content = ft.Text("ОБРАБОТКА...", weight=ft.FontWeight.BOLD)
         page.update()
 
         try:
@@ -122,29 +138,39 @@ def main(page: ft.Page):
             preview_box.value = preview_csv
             btn_download.disabled = False
             
-            page.overlay.append(ft.SnackBar(ft.Text("Данные успешно сведены!"), bgcolor=ft.Colors.GREEN_700, open=True))
+            show_message("Данные успешно сведены!")
 
         except Exception as ex:
-            page.overlay.append(ft.SnackBar(ft.Text(f"Ошибка: {str(ex)}"), bgcolor=ft.Colors.RED_700, open=True))
+            show_message(f"Ошибка: {str(ex)}", is_error=True)
 
         btn_process.disabled = False
-        btn_process.text = "▶ СВЕСТИ НАКЛАДНУЮ"
+        btn_process.content = ft.Text("▶ СВЕСТИ НАКЛАДНУЮ", weight=ft.FontWeight.BOLD)
         page.update()
 
-    # Кнопки
-    btn_process = ft.ElevatedButton(
-        "▶ СВЕСТИ НАКЛАДНУЮ", 
+    # Кнопки (используем актуальный ft.Button для Flet 1.0+)
+    btn_process = ft.Button(
+        content=ft.Text("▶ СВЕСТИ НАКЛАДНУЮ", weight=ft.FontWeight.BOLD),
         on_click=process_data,
-        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=8)),
-        height=50, expand=True
+        style=ft.ButtonStyle(
+            color=ft.Colors.WHITE,
+            bgcolor=ft.Colors.BLUE_700,
+            shape=ft.RoundedRectangleBorder(radius=8)
+        ),
+        height=50,
+        expand=True
     )
     
-    btn_download = ft.ElevatedButton(
-        "📥 СКАЧАТЬ EXCEL", 
+    btn_download = ft.Button(
+        content=ft.Text("📥 СКАЧАТЬ EXCEL", weight=ft.FontWeight.BOLD),
         disabled=True,
         on_click=lambda _: save_picker.save_file(allowed_extensions=["xlsx"], file_name="Посылка_СВЕДЕНО.xlsx"),
-        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=ft.Colors.GREEN_600, shape=ft.RoundedRectangleBorder(radius=8)),
-        height=50, expand=True
+        style=ft.ButtonStyle(
+            color=ft.Colors.WHITE,
+            bgcolor=ft.Colors.GREEN_600,
+            shape=ft.RoundedRectangleBorder(radius=8)
+        ),
+        height=50,
+        expand=True
     )
 
     # Построение интерфейса
@@ -161,7 +187,10 @@ def main(page: ft.Page):
         ft.Row([btn_process, ft.Container(width=20), btn_download]),
         ft.Divider(height=20, color=ft.Colors.TRANSPARENT),
         
-        ft.Row([ft.Text("Результат сведения:", weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_400), stats_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Row(
+            [ft.Text("Результат сведения:", weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_400), stats_text],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+        ),
         preview_box
     )
 
