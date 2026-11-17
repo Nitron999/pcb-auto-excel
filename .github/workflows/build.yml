@@ -29,7 +29,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Добавляем переменную окружения PYTHONIOENCODING=utf-8, чтобы галочки и эмодзи не крашили консоль
       - name: Build Flet App for Windows
+        env:
+          PYTHONIOENCODING: utf-8
         run: flet build windows
 
       - name: Upload Windows exe
