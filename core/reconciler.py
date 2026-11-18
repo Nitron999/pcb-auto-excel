@@ -36,59 +36,78 @@ def clean_schet_n(val):
     digits = re.sub(r'\D', '', s)
     return digits if 4 <= len(digits) <= 6 else ''
 
-def is_phone_or_code(text):
+def is_board_code_or_phone(text):
+    """Отсекает телефоны, децимальные номера плат (tpts..., АЮК...), даты и чисто цифровые коды."""
     s = str(text).strip()
-    if not s:
+    if not s or len(s) < 2:
         return True
-    if re.match(r'^(\+7|8|7)[\s\-\(]?\d{3}', s):
+    u = s.upper()
+    if u in ('NAN', 'NONE', 'NAT', 'ОТК', 'ФИЛИАЛ', 'ФИРМА', 'ЗАКАЗЧИК', 'ФИРМА ЗАКАЗЧИК', 'ДОСТАВКА', 'ПРИМЕЧАНИЕ'):
         return True
-    # Отсекаем децимальные номера и коды плат (например tpts559150045-2-1 или АЮК6.717.489)
-    if re.search(r'[a-zA-Z]{2,}\d{4,}', s) or re.search(r'\d+\.\d+\.\d+', s):
+    # Телефоны
+    if re.match(r'^(\+7|8|7)[\s\-\(\d]{7,}', s) or re.search(r'\d{3}[\s\-]\d{2}[\s\-]\d{2}', s):
         return True
+    # Даты
+    if re.search(r'\b\d{2}\.\d{2}\.\d{2,4}\b', s) or 'ОТПРАВКА' in u or 'ПРИХОД' in u:
+        return True
+    # Коды плат и децимальные номера (латиница с цифрами, подчеркивания, коды типа АЮК6.717.489, tpts559150045)
+    if re.search(r'[A-Za-z]{2,}[\-\_]?\d{3,}', s):
+        return True
+    if re.search(r'\d{3,}[\-\_]\d+', s) and not any(org in u for org in ['ООО', 'АО', 'ЗАО', 'ПАО', 'ИП ', 'ФГУП', 'НПЦ']):
+        return True
+    if re.search(r'[А-ЯA-Z]{2,}\d+\.\d+\.\d+', u) or 'ИЗМ.' in u or 'ТПТС' in u:
+        return True
+
     digits_count = sum(c.isdigit() for c in s)
     letters_count = sum(c.isalpha() for c in s)
-    if letters_count < 2 and digits_count >= 4:
+    if letters_count < 3:
+        return True
+    if digits_count > letters_count and not any(org in u for org in ['ООО', 'АО', 'ЗАО', 'ПАО', 'ИП']):
         return True
     return False
 
 def normalize_company_key(name):
     s = str(name or "").strip().lower()
     s = re.sub(r'\(.*?\)', '', s)
-    s = re.sub(r'\b(дм|сдэк|сдек|cdek|самовывоз|курьер|к|ооо|ао|зао|пао|ип|фгуп|нпц)\b', '', s)
+    s = re.sub(r'\b(дм|сдэк|сдек|cdek|самовывоз|курьер|к|ооо|ао|зао|пао|ип|фгуп|нпц|пз|мпотк)\b', '', s)
     s = re.sub(r'[^а-яa-z0-9]', '', s)
     return s
 
+def extract_delivery_from_text(raw_text):
+    if raw_text is None or (isinstance(raw_text, float) and np.isnan(raw_text)):
+        return ""
+    s = str(raw_text).strip()
+    if not s or s.lower() in ('nan', 'none', 'nat'):
+        return ""
+    u = s.upper()
+
+    if "САМОВЫВОЗ" in u or "САМОВ" in u:
+        return "Самовывоз"
+    if "СДЭК" in u or "CDEK" in u or "СДЕК" in u:
+        return "СДЭК"
+    if re.search(r'(^|[\s,;/\(\-\.\:])ДМ($|[\s,;/\)\-\.\:])', u) or "ДЕЛОВ" in u or "ДЛ" == u:
+        return "ДМ"
+    if u == "К" or "КУРЬЕР" in u or "ДОСТАВКА К" in u or re.search(r'(^|[\s,;/\(\-\.\:])К($|[\s,;/\)\-\.\:])', u):
+        return "К"
+    return ""
+
 def extract_firma_and_delivery(raw_text):
-    """
-    Разбирает ячейку из колонки 'Фирма заказчик':
-    возвращает (чистое_название_фирмы, способ_доставки).
-    """
     if raw_text is None or (isinstance(raw_text, float) and np.isnan(raw_text)):
         return "", ""
     s = str(raw_text).strip()
     if not s or s.lower() in ('nan', 'none', 'nat'):
         return "", ""
 
-    u = s.upper()
-    deliv = ""
+    deliv = extract_delivery_from_text(s)
 
-    if "САМОВЫВОЗ" in u or "САМОВ" in u:
-        deliv = "Самовывоз"
-    elif "СДЭК" in u or "CDEK" in u or "СДЕК" in u:
-        deliv = "СДЭК"
-    elif re.search(r'(^|[\s,;/\(\-\.\:])ДМ($|[\s,;/\)\-\.\:])', u) or "ДЕЛОВ" in u:
-        deliv = "ДМ"
-    elif u == "К" or "КУРЬЕР" in u or re.search(r'(^|[\s,;/\(\-\.\:])К($|[\s,;/\)\-\.\:])', u):
-        deliv = "К"
-
-    # Очищаем название фирмы от приписанного способа доставки
-    clean_name = re.sub(r'[\(\[\s,;\-\/\:]*(самовывоз|сдэк|сдек|cdek|курьер|дм)[\)\]\s,;\-\/\.\:]*$', '', s, flags=re.IGNORECASE).strip()
+    # Очищаем название фирмы от приписанного способа доставки в конце
+    clean_name = re.sub(r'[\(\[\s,;\-\/\:]*(самовывоз|сдэк|сдек|cdek|курьер|дм|деловые\s*линии)[\)\]\s,;\-\/\.\:]*$', '', s, flags=re.IGNORECASE).strip()
     clean_name = re.sub(r'[\s,;\-\/\:]+К$', '', clean_name).strip()
 
     if clean_name.upper() in ("ДМ", "СДЭК", "СДЕК", "CDEK", "К", "САМОВЫВОЗ", "КУРЬЕР", ""):
         return "", deliv
 
-    if is_phone_or_code(clean_name):
+    if is_board_code_or_phone(clean_name):
         return "", deliv
 
     return clean_name, deliv
@@ -105,33 +124,51 @@ def delivery_sort_rank(deliv_val):
         return 4
     return 5
 
+def score_column_as_firma(df, col_idx, start_row):
+    """Оценивает, насколько колонка похожа на колонку 'Фирма заказчик' (названия компаний/ФИО, а не коды плат)."""
+    sample = df.iloc[start_row : min(start_row + 150, len(df)), col_idx].dropna().astype(str).str.strip()
+    if len(sample) == 0:
+        return -100
+    good = 0
+    bad = 0
+    org_markers = 0
+    for val in sample:
+        if not val or val.lower() == 'nan':
+            continue
+        if is_board_code_or_phone(val):
+            bad += 1
+        else:
+            good += 1
+            u = val.upper()
+            if any(k in u for k in ['ООО', 'АО', 'ЗАО', 'ПАО', 'ИП ', 'НПЦ', 'ФГУП', 'ЗАВОД', 'КОМПАНИЯ']):
+                org_markers += 2
+    return (good * 2 + org_markers) - (bad * 3)
+
 def detect_sheet_columns(df, is_head=True):
     num_rows, num_cols = df.shape
     if num_rows == 0 or num_cols == 0:
         return None
 
-    header_row_idx = 0
-    best_score = -1
+    header_row_idx = -1
+    best_score = 0
 
-    for r_idx in range(min(20, num_rows)):
+    for r_idx in range(min(15, num_rows)):
         row_vals = df.iloc[r_idx].tolist()
         row_strs = [str(x).strip().lower() for x in row_vals if pd.notna(x)]
         score = 0
         for cell in row_strs:
             if cell == 'ps' or re.search(r'\bps\b', cell):
                 score += 4
-            if 'фирма заказчик' in cell or 'заказчик' in cell or 'фирма' in cell:
-                score += 6
+            if 'фирма' in cell or 'заказчик' in cell or 'клиент' in cell:
+                score += 5
             if any(k in cell for k in ['счет', 'счёт', 'кол', 'доставк', 'сч/н']):
                 score += 2
         if score > best_score:
             best_score = score
             header_row_idx = r_idx
 
-    raw_headers = df.iloc[header_row_idx].tolist()
-    headers = [str(x).strip().lower() if pd.notna(x) else "" for x in raw_headers]
     cols = {
-        "header_row": header_row_idx,
+        "header_row": header_row_idx if best_score >= 4 else -1,
         "ps": None,
         "firma_zakazchik": None,
         "schet_pp": None,
@@ -140,66 +177,89 @@ def detect_sheet_columns(df, is_head=True):
         "deliv": None
     }
 
-    # 1. Ищем колонку "Фирма заказчик"
-    for idx, h in enumerate(headers):
-        if 'фирма заказчик' in h or 'фирма-заказчик' in h:
-            cols["firma_zakazchik"] = idx
-            break
-    if cols["firma_zakazchik"] is None:
+    start_data_row = cols["header_row"] + 1 if cols["header_row"] >= 0 else 0
+
+    if cols["header_row"] >= 0:
+        raw_headers = df.iloc[cols["header_row"]].tolist()
+        headers = [str(x).strip().lower() if pd.notna(x) else "" for x in raw_headers]
+
         for idx, h in enumerate(headers):
-            if any(bad in h for bad in ['тел', 'контакт', 'примеч', 'адрес', 'чертеж', 'децим', 'плата', 'изделие', 'наименование плат']):
-                continue
-            if 'заказчик' in h or h == 'фирма' or 'клиент' in h or 'покупатель' in h:
+            if 'фирма заказчик' in h or 'фирма-заказчик' in h:
                 cols["firma_zakazchik"] = idx
                 break
+        if cols["firma_zakazchik"] is None:
+            for idx, h in enumerate(headers):
+                if any(bad in h for bad in ['тел', 'контакт', 'примеч', 'адрес', 'чертеж', 'децим', 'плата', 'изделие', 'наименование плат', 'файл']):
+                    continue
+                if 'заказчик' in h or h == 'фирма' or 'клиент' in h or 'покупатель' in h:
+                    cols["firma_zakazchik"] = idx
+                    break
 
-    # 2. Остальные колонки
-    for idx, h in enumerate(headers):
-        if not h:
-            continue
-        if cols["ps"] is None and (h == "ps" or re.search(r'\bps\b', h)):
-            cols["ps"] = idx
-        elif cols["schet_n"] is None and any(k in h for k in ['сч/н', 'сч\\н', 'счет н', 'счёт н', 'номер сч']):
-            cols["schet_n"] = idx
-        elif cols["schet_pp"] is None and is_head and any(k in h for k in ['счет пп', 'счёт пп', 'счет', 'счёт']):
-            if 'по счету' not in h and 'по счёту' not in h and 'сч/н' not in h:
-                cols["schet_pp"] = idx
-        elif cols["qty"] is None and any(k in h for k in ['по счету', 'по счёту', 'кол-во', 'количество', 'шт']):
-            cols["qty"] = idx
-        elif cols["deliv"] is None and any(k in h for k in ['доставк', 'способ', 'отправк']):
-            cols["deliv"] = idx
+        for idx, h in enumerate(headers):
+            if not h:
+                continue
+            if cols["ps"] is None and (h == "ps" or re.search(r'\bps\b', h)):
+                cols["ps"] = idx
+            elif cols["schet_n"] is None and any(k in h for k in ['сч/н', 'сч\\н', 'счет н', 'счёт н']):
+                cols["schet_n"] = idx
+            elif cols["schet_pp"] is None and is_head and any(k in h for k in ['счет пп', 'счёт пп', 'счет', 'счёт']):
+                if 'по счету' not in h and 'по счёту' not in h and 'сч/н' not in h:
+                    cols["schet_pp"] = idx
+            elif cols["qty"] is None and any(k in h for k in ['по счету', 'по счёту', 'кол-во', 'количество', 'шт']):
+                cols["qty"] = idx
+            elif cols["deliv"] is None and any(k in h for k in ['доставк', 'способ', 'отправк']):
+                cols["deliv"] = idx
 
-    data_sample = df.iloc[header_row_idx + 1 : min(header_row_idx + 100, num_rows)]
-    if not data_sample.empty and cols["ps"] is None:
-        for c_idx in range(num_cols):
-            vals = data_sample.iloc[:, c_idx].dropna().astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-            if len(vals) > 0 and (vals.str.match(r'^\d{6}$').mean() > 0.35):
-                cols["ps"] = c_idx
-                break
+    # Если шапки нет или колонки не подписаны — определяем их по данным
+    data_sample = df.iloc[start_data_row : min(start_data_row + 120, num_rows)]
+    if not data_sample.empty:
+        if cols["ps"] is None:
+            for c_idx in range(num_cols):
+                vals = data_sample.iloc[:, c_idx].dropna().astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+                if len(vals) > 0 and (vals.str.match(r'^\d{6}$').mean() > 0.3):
+                    cols["ps"] = c_idx
+                    break
 
     if is_head:
         if cols["ps"] is None:
             cols["ps"] = min(2, num_cols - 1)
         if cols["qty"] is None:
             cols["qty"] = min(4, num_cols - 1)
+        if cols["deliv"] is None and num_cols > 14:
+            cols["deliv"] = 14
     else:
         if cols["ps"] is None:
             cols["ps"] = min(4, num_cols - 1)
         if cols["qty"] is None:
             cols["qty"] = min(7, num_cols - 1)
+        if cols["deliv"] is None and num_cols > 1:
+            cols["deliv"] = 1
 
+    # Проверяем/находим лучшую колонку с названиями фирм по содержимому (чтобы не взять колонку с децимальными номерами плат)
+    best_f_col = cols["firma_zakazchik"]
+    best_f_score = score_column_as_firma(df, best_f_col, start_data_row) if best_f_col is not None else -100
+
+    for c_idx in range(num_cols):
+        if c_idx in (cols["ps"], cols["qty"], cols["schet_pp"], cols["schet_n"]):
+            continue
+        sc = score_column_as_firma(df, c_idx, start_data_row)
+        if sc > best_f_score and sc > 2:
+            best_f_score = sc
+            best_f_col = c_idx
+
+    cols["firma_zakazchik"] = best_f_col
     return cols
 
 def build_workbook_lookup(excel_path, is_head=True):
     """
-    Читает все листы сводки с поддержкой объединённых ячеек.
-    Собирает справочники по PS, по номеру счёта (Сч/Н) и по названию фирмы.
+    Сканирует все листы книги Excel.
+    Извлекает Фирму заказчика, Счет ПП, Количество и Доставку из целевых и соседних ячеек строки.
     """
     xl = pd.ExcelFile(excel_path)
     ps_lookup = {}
-    schet_n_lookup = {}       # Сч/Н -> {"firma", "schet_pp", "deliv"}
-    schet_deliv_lookup = {}   # любой номер счета -> deliv
-    firma_deliv_history = {}  # нормализованная фирма -> deliv
+    schet_n_lookup = {}
+    schet_deliv_lookup = {}
+    firma_deliv_history = {}
     seen_ps = set()
     duplicates = []
 
@@ -209,7 +269,7 @@ def build_workbook_lookup(excel_path, is_head=True):
         if cols is None:
             continue
 
-        start_r = cols["header_row"] + 1
+        start_r = cols["header_row"] + 1 if cols["header_row"] >= 0 else 0
         sub = df.iloc[start_r:].copy().reset_index(drop=True)
 
         ps_col = cols["ps"]
@@ -219,7 +279,6 @@ def build_workbook_lookup(excel_path, is_head=True):
         qty_col = cols["qty"]
         deliv_col = cols["deliv"]
 
-        # Контекст объединённых ячеек внутри одного счёта
         last_schet_n = ""
         last_fz_firma = ""
         last_fz_deliv = ""
@@ -228,7 +287,6 @@ def build_workbook_lookup(excel_path, is_head=True):
         for i in range(len(sub)):
             row_vals = sub.iloc[i].tolist()
 
-            # Если вся строка пустая — сбрасываем контекст объединённых ячеек
             if all(pd.isna(x) or str(x).strip() == '' for x in row_vals):
                 last_schet_n = ""
                 last_fz_firma = ""
@@ -236,11 +294,10 @@ def build_workbook_lookup(excel_path, is_head=True):
                 last_schet_pp = ""
                 continue
 
-            # Текущий Сч/Н
+            # 1. Ищем Сч/Н
             curr_sn = clean_schet_n(row_vals[schet_n_col]) if (schet_n_col is not None and schet_n_col < len(row_vals)) else ""
             if not curr_sn:
-                # Ищем 5-значный номер счета Сч/Н в соседних колонках
-                for c_i in range(min(8, len(row_vals))):
+                for c_i in range(min(10, len(row_vals))):
                     if c_i in (ps_col, qty_col, fz_col, schet_pp_col):
                         continue
                     cand_sn = clean_schet_n(row_vals[c_i])
@@ -248,54 +305,60 @@ def build_workbook_lookup(excel_path, is_head=True):
                         curr_sn = cand_sn
                         break
 
-            # Если начался новый номер счета — сбрасываем контекст предыдущего счёта
             if curr_sn and curr_sn != last_schet_n:
                 last_schet_n = curr_sn
                 last_fz_firma = ""
                 last_fz_deliv = ""
                 last_schet_pp = ""
 
-            # Читаем колонку "Фирма заказчик"
+            # 2. Ищем Фирму и Доставку в колонке "Фирма заказчик", а если там пусто — во всех ячейках строки
             fz_firma, fz_deliv = "", ""
             if fz_col is not None and fz_col < len(row_vals):
                 fz_firma, fz_deliv = extract_firma_and_delivery(row_vals[fz_col])
 
-            # Если в объединённой ячейке пусто, наследуем от верхней строки этого же счёта
-            if fz_firma:
-                last_fz_firma = fz_firma
-            elif last_fz_firma and curr_sn == last_schet_n:
-                fz_firma = last_fz_firma
-
-            if fz_deliv:
-                last_fz_deliv = fz_deliv
-            elif last_fz_deliv and curr_sn == last_schet_n:
-                fz_deliv = last_fz_deliv
-
-            # Проверяем также отдельную колонку доставки и остальные ячейки строки
-            col_deliv_val = ""
-            if deliv_col is not None and deliv_col < len(row_vals):
-                _, col_deliv_val = extract_firma_and_delivery(row_vals[deliv_col])
-            if not col_deliv_val:
+            if not fz_firma:
                 for c_i in range(len(row_vals)):
-                    if c_i in (ps_col, qty_col, schet_n_col, schet_pp_col):
+                    if c_i in (ps_col, qty_col, schet_pp_col, schet_n_col, deliv_col):
                         continue
-                    _, cand_d = extract_firma_and_delivery(row_vals[c_i])
-                    if cand_d:
-                        col_deliv_val = cand_d
+                    cand_f, cand_d = extract_firma_and_delivery(row_vals[c_i])
+                    if cand_f and len(cand_f) >= 3:
+                        fz_firma = cand_f
+                        if cand_d and not fz_deliv:
+                            fz_deliv = cand_d
                         break
 
-            final_row_deliv = fz_deliv or col_deliv_val
-            if final_row_deliv:
-                last_fz_deliv = final_row_deliv
+            # Проверяем доставку во всех ячейках строки
+            row_deliv = fz_deliv
+            if not row_deliv and deliv_col is not None and deliv_col < len(row_vals):
+                row_deliv = extract_delivery_from_text(row_vals[deliv_col])
+            if not row_deliv:
+                for c_i in range(len(row_vals)):
+                    if c_i in (ps_col, qty_col, schet_pp_col, schet_n_col):
+                        continue
+                    cand_d = extract_delivery_from_text(row_vals[c_i])
+                    if cand_d:
+                        row_deliv = cand_d
+                        break
 
-            # Читаем Счет ПП (4 цифры, например 0682)
+            # Наследование внутри объединённых ячеек одного счёта
+            if fz_firma:
+                last_fz_firma = fz_firma
+            elif last_fz_firma:
+                fz_firma = last_fz_firma
+
+            if row_deliv:
+                last_fz_deliv = row_deliv
+            elif last_fz_deliv and (curr_sn == last_schet_n or fz_firma == last_fz_firma):
+                row_deliv = last_fz_deliv
+
+            # 3. Ищем Счет ПП (4 цифры, например 0611, 0682)
             curr_schet_pp = ""
             if is_head:
                 raw_schet = ""
                 if schet_pp_col is not None and schet_pp_col < len(row_vals) and pd.notna(row_vals[schet_pp_col]):
                     raw_schet = str(row_vals[schet_pp_col]).strip()
                 if not raw_schet:
-                    for c_i in range(min(10, len(row_vals))):
+                    for c_i in range(len(row_vals)):
                         if c_i in (ps_col, qty_col, deliv_col, fz_col, schet_n_col):
                             continue
                         v = str(row_vals[c_i]).strip() if pd.notna(row_vals[c_i]) else ""
@@ -310,14 +373,14 @@ def build_workbook_lookup(excel_path, is_head=True):
                 if digits and len(digits) <= 4:
                     curr_schet_pp = digits.zfill(4)
                     last_schet_pp = curr_schet_pp
-                elif last_schet_pp and curr_sn == last_schet_n:
+                elif last_schet_pp and (curr_sn == last_schet_n or fz_firma == last_fz_firma):
                     curr_schet_pp = last_schet_pp
 
-            # Сохраняем в справочники по фирме и по Сч/Н
-            if fz_firma and final_row_deliv:
+            # Запоминаем историю по фирме и по номеру счёта
+            if fz_firma and row_deliv:
                 f_key = normalize_company_key(fz_firma)
                 if f_key:
-                    firma_deliv_history[f_key] = final_row_deliv
+                    firma_deliv_history[f_key] = row_deliv
 
             if curr_sn:
                 sn_entry = schet_n_lookup.get(curr_sn, {"firma": "", "schet_pp": "", "deliv": ""})
@@ -325,13 +388,13 @@ def build_workbook_lookup(excel_path, is_head=True):
                     sn_entry["firma"] = fz_firma
                 if curr_schet_pp:
                     sn_entry["schet_pp"] = curr_schet_pp
-                if final_row_deliv:
-                    sn_entry["deliv"] = final_row_deliv
-                    schet_deliv_lookup[curr_sn] = final_row_deliv
+                if row_deliv:
+                    sn_entry["deliv"] = row_deliv
+                    schet_deliv_lookup[curr_sn] = row_deliv
                 schet_n_lookup[curr_sn] = sn_entry
 
-            if curr_schet_pp and final_row_deliv:
-                schet_deliv_lookup[curr_schet_pp] = final_row_deliv
+            if curr_schet_pp and row_deliv:
+                schet_deliv_lookup[curr_schet_pp] = row_deliv
 
             if ps_col is None or ps_col >= len(row_vals):
                 continue
@@ -358,12 +421,12 @@ def build_workbook_lookup(excel_path, is_head=True):
                 if str(q_val).strip() != '':
                     entry["qty"] = q_val
 
-            if final_row_deliv:
-                entry["deliv"] = final_row_deliv
+            if row_deliv:
+                entry["deliv"] = row_deliv
 
             ps_lookup[ps] = entry
 
-    # Дозаполняем пробелы в справочнике PS по номеру счёта Сч/Н и по истории фирмы
+    # Второй проход: заполняем пропуски в PS из справочника Сч/Н и истории фирм
     for ps, entry in ps_lookup.items():
         sn = entry.get("schet_n", "")
         if sn and sn in schet_n_lookup:
@@ -399,19 +462,64 @@ def find_last_block_start(df_raw):
             break
     return last_sep
 
-def build_posylka_history(df_raw, end_idx, idx_firma, idx_deliv):
-    hist = {}
+def build_posylka_full_history(df_raw, end_idx, idx_firma, idx_ps, idx_schet_pp, idx_schet_n, idx_deliv):
+    """
+    Читает все предыдущие (верхние) отправки в самом файле Посылка!
+    Запоминает по каждой Фирме, по каждому Сч/Н и по каждому PS:
+    - Название фирмы
+    - Счет ПП (например, 0611 для Сч/Н 20052 ВНИИА)
+    - Доставку (ДМ, СДЭК, К, Самовывоз)
+    """
+    firma_to_deliv = {}
+    firma_to_schet_pp = {}
+    sn_to_info = {}
+    ps_to_info = {}
+
     for idx in range(1, end_idx):
         row_vals = df_raw.iloc[idx].tolist()
-        if idx_firma >= len(row_vals) or idx_deliv >= len(row_vals):
-            continue
-        f_raw = str(row_vals[idx_firma]).strip() if pd.notna(row_vals[idx_firma]) else ""
-        _, d_norm = extract_firma_and_delivery(row_vals[idx_deliv])
-        if f_raw and d_norm:
-            f_key = normalize_company_key(f_raw)
+        f_raw = str(row_vals[idx_firma]).strip() if (idx_firma < len(row_vals) and pd.notna(row_vals[idx_firma])) else ""
+        f_clean, f_deliv = extract_firma_and_delivery(f_raw)
+        d_col = extract_delivery_from_text(row_vals[idx_deliv]) if idx_deliv < len(row_vals) else ""
+        d_final = d_col or f_deliv
+
+        ps_val = clean_ps(row_vals[idx_ps]) if idx_ps < len(row_vals) else ""
+        sn_val = clean_schet_n(row_vals[idx_schet_n]) if idx_schet_n < len(row_vals) else ""
+
+        spp_raw = str(row_vals[idx_schet_pp]).strip() if (idx_schet_pp < len(row_vals) and pd.notna(row_vals[idx_schet_pp])) else ""
+        if spp_raw.endswith('.0'):
+            spp_raw = spp_raw[:-2]
+        spp_digits = re.sub(r'\D', '', spp_raw)
+        spp_val = spp_digits.zfill(4) if (spp_digits and len(spp_digits) <= 4) else ""
+
+        if f_clean:
+            f_key = normalize_company_key(f_clean)
             if f_key:
-                hist[f_key] = d_norm
-    return hist
+                if d_final:
+                    firma_to_deliv[f_key] = d_final
+                if spp_val:
+                    firma_to_schet_pp[f_key] = spp_val
+
+        if sn_val:
+            info = sn_to_info.get(sn_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            if f_clean:
+                info["firma"] = f_clean
+            if spp_val:
+                info["schet_pp"] = spp_val
+            if d_final:
+                info["deliv"] = d_final
+            sn_to_info[sn_val] = info
+
+        if ps_val:
+            info = ps_to_info.get(ps_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            if f_clean:
+                info["firma"] = f_clean
+            if spp_val:
+                info["schet_pp"] = spp_val
+            if d_final:
+                info["deliv"] = d_final
+            ps_to_info[ps_val] = info
+
+    return firma_to_deliv, firma_to_schet_pp, sn_to_info, ps_to_info
 
 def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     if progress_callback:
@@ -424,7 +532,7 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     df_pos_raw = pd.read_excel(real_pos, sheet_name=0, header=None)
 
     if progress_callback:
-        progress_callback(0.3, "Чтение колонки «Фирма заказчик» из Сводки ПП 2026 и Сводки Филиал 2025...")
+        progress_callback(0.3, "Анализ Сводки ПП 2026 и Сводки Филиал 2025...")
 
     pp_dict, pp_sn_lookup, pp_schet_deliv, pp_firma_hist, pp_duplicates = build_workbook_lookup(real_pp, is_head=True)
     filial_dict, filial_sn_lookup, filial_schet_deliv, filial_firma_hist, filial_duplicates = build_workbook_lookup(real_fil, is_head=False)
@@ -444,7 +552,9 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     idx_deliv = col_map.get('Доставка', 10)
 
     start_idx = find_last_block_start(df_pos_raw)
-    posylka_firma_hist = build_posylka_history(df_pos_raw, start_idx, idx_firma, idx_deliv)
+    pos_f_deliv, pos_f_spp, pos_sn_info, pos_ps_info = build_posylka_full_history(
+        df_pos_raw, start_idx, idx_firma, idx_ps, idx_schet_pp, idx_schet_n, idx_deliv
+    )
 
     df_block = df_pos_raw.iloc[start_idx:].copy().reset_index(drop=True)
     df_block = df_block.astype(object)
@@ -505,8 +615,14 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
         if in_head and in_filial:
             stats["conflicts_both_sources"] += 1
 
+        # Если в самой ячейке Фирма в Посылке была дописана доставка, извлекаем её
+        if idx_firma < num_block_cols and pd.notna(row_vals[idx_firma]):
+            f_clean_existing, f_deliv_existing = extract_firma_and_delivery(row_vals[idx_firma])
+            if f_deliv_existing and idx_deliv < num_block_cols:
+                df_block.iat[idx, idx_deliv] = f_deliv_existing
+
         if idx_deliv < num_block_cols:
-            _, existing_deliv = extract_firma_and_delivery(row_vals[idx_deliv])
+            existing_deliv = extract_delivery_from_text(df_block.iat[idx, idx_deliv])
             if existing_deliv:
                 df_block.iat[idx, idx_deliv] = existing_deliv
 
@@ -516,38 +632,52 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
             v = df_block.iat[idx, col_i]
             return pd.isna(v) or str(v).strip() == ''
 
-        # Если в колонке Фирма попал код платы/телефон, очищаем для подстановки названия компании
         if idx_firma < num_block_cols and not is_cell_empty(idx_firma):
-            if is_phone_or_code(df_block.iat[idx, idx_firma]):
+            if is_board_code_or_phone(df_block.iat[idx, idx_firma]):
                 df_block.iat[idx, idx_firma] = np.nan
 
-        # Блок 1: Печатные платы (Сводка ООО Печатные платы 2026)
+        # Блок 1: Печатные платы
         if current_zone == "head":
             info = pp_dict.get(ps, {"firma": "", "schet_pp": "", "qty": np.nan, "deliv": ""})
             sn_fallback = pp_sn_lookup.get(schet_n_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            pos_sn = pos_sn_info.get(schet_n_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            pos_ps = pos_ps_info.get(ps, {"firma": "", "schet_pp": "", "deliv": ""})
 
-            firma_best = info["firma"] or sn_fallback["firma"]
-            schet_pp_best = info["schet_pp"] or sn_fallback["schet_pp"]
-
-            if firma_best:
+            firma_best = info["firma"] or sn_fallback["firma"] or pos_ps["firma"] or pos_sn["firma"]
+            if is_cell_empty(idx_firma) and firma_best:
                 df_block.iat[idx, idx_firma] = firma_best
-            if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
-                df_block.iat[idx, idx_qty] = info["qty"]
+            elif firma_best and is_board_code_or_phone(df_block.iat[idx, idx_firma]):
+                df_block.iat[idx, idx_firma] = firma_best
+
+            firma_now = str(df_block.iat[idx, idx_firma] or "").strip()
+            f_key = normalize_company_key(firma_now)
+
+            schet_pp_best = (
+                info["schet_pp"]
+                or sn_fallback["schet_pp"]
+                or pos_ps["schet_pp"]
+                or pos_sn["schet_pp"]
+                or pos_f_spp.get(f_key, "")
+            )
             if is_cell_empty(idx_schet_pp) and schet_pp_best:
                 df_block.iat[idx, idx_schet_pp] = schet_pp_best
+
+            if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
+                df_block.iat[idx, idx_qty] = info["qty"]
+
             if is_cell_empty(idx_otk):
                 df_block.iat[idx, idx_otk] = "ОТК"
 
             if is_cell_empty(idx_deliv):
-                firma_now = str(df_block.iat[idx, idx_firma] or "").strip()
-                f_key = normalize_company_key(firma_now)
                 d_val = (
                     info["deliv"]
                     or sn_fallback["deliv"]
                     or pp_schet_deliv.get(schet_pp_best, "")
                     or pp_schet_deliv.get(schet_n_val, "")
                     or pp_firma_hist.get(f_key, "")
-                    or posylka_firma_hist.get(f_key, "")
+                    or pos_ps["deliv"]
+                    or pos_sn["deliv"]
+                    or pos_f_deliv.get(f_key, "")
                 )
                 if d_val:
                     df_block.iat[idx, idx_deliv] = d_val
@@ -566,13 +696,18 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
                 st = "head"
             row_meta.append({"idx": idx, "type": "data", "zone": "head", "status": st, "deliv": final_d})
 
-        # Блок 2: Филиал (Сводка филиал 2025 -> колонка "Фирма заказчик")
+        # Блок 2: Филиал
         else:
             info = filial_dict.get(ps, {"firma": "", "schet_pp": "", "qty": np.nan, "deliv": ""})
             sn_fallback = filial_sn_lookup.get(schet_n_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            pos_sn = pos_sn_info.get(schet_n_val, {"firma": "", "schet_pp": "", "deliv": ""})
+            pos_ps = pos_ps_info.get(ps, {"firma": "", "schet_pp": "", "deliv": ""})
 
-            if is_cell_empty(idx_firma) and (info["firma"] or sn_fallback["firma"]):
-                df_block.iat[idx, idx_firma] = info["firma"] or sn_fallback["firma"]
+            if is_cell_empty(idx_firma):
+                f_best = info["firma"] or sn_fallback["firma"] or pos_ps["firma"] or pos_sn["firma"]
+                if f_best:
+                    df_block.iat[idx, idx_firma] = f_best
+
             if is_cell_empty(idx_qty) and pd.notna(info["qty"]):
                 df_block.iat[idx, idx_qty] = info["qty"]
 
@@ -584,7 +719,10 @@ def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
                     or sn_fallback["deliv"]
                     or filial_schet_deliv.get(schet_n_val, "")
                     or filial_firma_hist.get(f_key, "")
-                    or posylka_firma_hist.get(f_key, "")
+                    or pos_ps["deliv"]
+                    or pos_sn["deliv"]
+                    or pos_f_deliv.get(f_key, "")
+                    or pp_firma_hist.get(f_key, "")
                 )
                 if d_val:
                     df_block.iat[idx, idx_deliv] = d_val
