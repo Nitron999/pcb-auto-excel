@@ -1,5 +1,7 @@
 import os
 import shutil
+import tempfile
+import uuid
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -27,6 +29,15 @@ COLS_ORDER = [
     'Фирма', 'PS', 'Счет пп   ', 'Сч/Н', 'По счету', 'Получено', 'Отгрузить!',
     'Этикетка', 'на складе!', 'долг', 'Доставка', 'Расходная накладная'
 ]
+
+
+def _safe_copy_read_only(src_path, dst_path):
+    """Копирует файл в режиме только-чтение без блокировки сетевого оригинала."""
+    try:
+        shutil.copy2(src_path, dst_path)
+    except Exception:
+        with open(src_path, 'rb') as f_src, open(dst_path, 'wb') as f_dst:
+            shutil.copyfileobj(f_src, f_dst)
 
 
 def write_styled_row(ws, row_idx, row_dict):
@@ -69,7 +80,8 @@ def write_styled_row(ws, row_idx, row_dict):
 
 def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=None, stats=None):
     """
-    Сохраняет итоговый Excel-файл с полной сохранностью шапки, стилей и структуры листа 'Посылка'.
+    Сохраняет итоговый Excel-файл строго из локальной временной копии,
+    никогда не открывая сетевой оригинал 'Посылки' напрямую.
     """
     if make_backup and os.path.exists(output_path):
         b_dir = backup_dir if backup_dir else os.path.join(os.path.dirname(output_path), "Backups")
@@ -79,69 +91,89 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
         base_name = os.path.basename(output_path)
         shutil.copy2(output_path, os.path.join(b_dir, f"{ts}_{base_name}"))
 
-    # Если передана полная статистика из run_reconciliation, редактируем копию исходной книги с сохранением всех стилей
-    if stats and stats.get("source_posylka_path") and os.path.exists(stats["source_posylka_path"]):
-        wb = openpyxl.load_workbook(stats["source_posylka_path"])
-        ws = wb['Посылка'] if 'Посылка' in wb.sheetnames else wb.active
+    # Используем уже готовую локальную временную копию Посылки либо делаем свежую локальную копию
+    local_template = None
+    own_temp_file = False
 
-        last_hdr_row = stats["last_hdr_row"] + 1  # перевод из 0-based pandas в 1-based openpyxl
-        sorted_plates = stats.get("sorted_plates", [])
-        sorted_filial = stats.get("sorted_filial", [])
+    if stats:
+        cached_local = stats.get("local_posylka_copy")
+        if cached_local and os.path.exists(cached_local):
+            local_template = cached_local
+        elif stats.get("source_posylka_path") and os.path.exists(stats["source_posylka_path"]):
+            local_template = os.path.join(tempfile.gettempdir(), f"pcb_exp_{uuid.uuid4().hex[:8]}.xlsx")
+            _safe_copy_read_only(stats["source_posylka_path"], local_template)
+            own_temp_file = True
 
-        # Сохраняем всю строку заголовка целиком (включая жёлтую "Субботняя отгрузка" #FFFF00 и др.)
-        header_snapshot = []
-        for c in range(1, 13):
-            cell = ws.cell(row=last_hdr_row, column=c)
-            header_snapshot.append((
-                c,
-                cell.value,
-                cell.font.copy(),
-                cell.fill.copy(),
-                cell.border.copy(),
-                cell.alignment.copy()
-            ))
+    if stats and local_template and os.path.exists(local_template):
+        try:
+            wb = openpyxl.load_workbook(local_template)
+            ws = wb['Посылка'] if 'Посылка' in wb.sheetnames else wb.active
 
-        # Очищаем хвост начиная с last_hdr_row и записываем идеально выстроенный блок
-        if ws.max_row >= last_hdr_row:
-            ws.delete_rows(last_hdr_row, ws.max_row - last_hdr_row + 1)
+            last_hdr_row = stats["last_hdr_row"] + 1  # перевод из 0-based pandas в 1-based openpyxl
+            sorted_plates = stats.get("sorted_plates", [])
+            sorted_filial = stats.get("sorted_filial", [])
 
-        # 1. Восстанавливаем неприкосновенную шапку даты (сохраняя "Субботняя отгрузка" и цвета)
-        for c, val, fnt, fl, brd, aln in header_snapshot:
-            cell = ws.cell(row=last_hdr_row, column=c)
-            cell.value = val
-            cell.font = fnt
-            cell.fill = fl
-            cell.border = brd
-            cell.alignment = aln
+            # Сохраняем всю строку заголовка целиком (включая жёлтую "Субботняя отгрузка" #FFFF00 и др.)
+            header_snapshot = []
+            for c in range(1, 13):
+                cell = ws.cell(row=last_hdr_row, column=c)
+                header_snapshot.append((
+                    c,
+                    cell.value,
+                    cell.font.copy(),
+                    cell.fill.copy(),
+                    cell.border.copy(),
+                    cell.alignment.copy()
+                ))
 
-        curr_r = last_hdr_row + 2  # 1 пустая строка после заголовка
+            # Очищаем хвост начиная с last_hdr_row и записываем идеально выстроенный блок
+            if ws.max_row >= last_hdr_row:
+                ws.delete_rows(last_hdr_row, ws.max_row - last_hdr_row + 1)
 
-        # 2. Записываем платы
-        for p_row in sorted_plates:
-            write_styled_row(ws, curr_r, p_row)
-            curr_r += 1
+            # 1. Восстанавливаем неприкосновенную шапку даты (сохраняя "Субботняя отгрузка" и цвета)
+            for c, val, fnt, fl, brd, aln in header_snapshot:
+                cell = ws.cell(row=last_hdr_row, column=c)
+                cell.value = val
+                cell.font = fnt
+                cell.fill = fl
+                cell.border = brd
+                cell.alignment = aln
 
-        if sorted_filial:
-            curr_r += 1  # 1 пустая строка перед плашкой филиал
+            curr_r = last_hdr_row + 2  # 1 пустая строка после заголовка
 
-            # 3. Записываем красную плашку "филиал"
-            ws.row_dimensions[curr_r].height = 28
-            c_fil = ws.cell(row=curr_r, column=1)
-            c_fil.value = 'филиал'
-            c_fil.font = FONT_FILIAL_HDR
-            c_fil.fill = FILL_FILIAL
-            c_fil.border = THICK_BORDER
-            c_fil.alignment = ALIGN_CENTER
-
-            curr_r += 2  # 1 пустая строка после плашки филиал
-
-            # 4. Записываем филиал
-            for f_row in sorted_filial:
-                write_styled_row(ws, curr_r, f_row)
+            # 2. Записываем платы
+            for p_row in sorted_plates:
+                write_styled_row(ws, curr_r, p_row)
                 curr_r += 1
 
-        wb.save(output_path)
-        return output_path
+            if sorted_filial:
+                curr_r += 1  # 1 пустая строка перед плашкой филиал
+
+                # 3. Записываем красную плашку "филиал"
+                ws.row_dimensions[curr_r].height = 28
+                c_fil = ws.cell(row=curr_r, column=1)
+                c_fil.value = 'филиал'
+                c_fil.font = FONT_FILIAL_HDR
+                c_fil.fill = FILL_FILIAL
+                c_fil.border = THICK_BORDER
+                c_fil.alignment = ALIGN_CENTER
+
+                curr_r += 2  # 1 пустая строка после плашки филиал
+
+                # 4. Записываем филиал
+                for f_row in sorted_filial:
+                    write_styled_row(ws, curr_r, f_row)
+                    curr_r += 1
+
+            wb.save(output_path)
+            wb.close()
+            return output_path
+        finally:
+            if own_temp_file and local_template and os.path.exists(local_template):
+                try:
+                    os.remove(local_template)
+                except Exception:
+                    pass
 
     # Резервный экспорт, если вызван без stats
     wb = openpyxl.Workbook()
@@ -151,4 +183,5 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
     for idx, row_series in df.iterrows():
         write_styled_row(ws, idx + 2, row_series.to_dict())
     wb.save(output_path)
+    wb.close()
     return output_path
