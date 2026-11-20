@@ -1,5 +1,8 @@
 import os
 import re
+import shutil
+import tempfile
+import uuid
 import pandas as pd
 import numpy as np
 
@@ -16,6 +19,30 @@ def resolve_shortcut(path):
         except Exception:
             pass
     return clean
+
+
+def copy_to_local_temp(src_path, temp_dir, prefix):
+    """
+    Копирует сетевой файл во временную локальную папку без блокировки оригинала,
+    чтобы не отбирать 'первую руку' у пользователей в сети.
+    """
+    ext = os.path.splitext(src_path)[1] or ".xlsx"
+    local_copy = os.path.join(temp_dir, f"{prefix}_{uuid.uuid4().hex[:8]}{ext}")
+    try:
+        shutil.copy2(src_path, local_copy)
+    except Exception:
+        # Резервное потоковое чтение в режиме только-чтение (rb), если copy2 споткнётся о метаданные сети
+        with open(src_path, 'rb') as f_src, open(local_copy, 'wb') as f_dst:
+            shutil.copyfileobj(f_src, f_dst)
+    return local_copy
+
+
+def cleanup_temp_dir(temp_dir):
+    if temp_dir and os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def get_delivery_rank(val):
@@ -98,7 +125,7 @@ def lookup_plate_info(df_plat, ps, schn):
         if not sn_matches.empty:
             r = sn_matches.index[-1]
             firm = str(df_plat.iloc[r, 14]).strip() if pd.notna(df_plat.iloc[r, 14]) else None
-            sch_pp = str(df_plat.iloc[r, 12]).replace('.0', '', regex=False).strip() if pd.notna(df_plat.iloc[r, 12]) else None
+            sch_pp = str(df_plat.iloc[r, 12]).replace('.0', '').strip() if pd.notna(df_plat.iloc[r, 12]) else None
             block_text = " ".join(
                 df_plat.iloc[max(0, r - 2):min(len(df_plat), r + 3), 14].dropna().astype(str)
             ).lower()
@@ -162,199 +189,224 @@ def lookup_filial_info(df_filial, ps, schn):
 
 def run_reconciliation(p_pos, p_pp, p_fil, progress_callback=None):
     if progress_callback:
-        progress_callback(0.1, "Чтение Посылки и сводных таблиц...")
+        progress_callback(0.08, "Копирование сетевых файлов во временную локальную папку (без блокировки)...")
 
     real_pos = resolve_shortcut(p_pos)
     real_pp = resolve_shortcut(p_pp)
     real_fil = resolve_shortcut(p_fil)
 
-    xl_pos = pd.ExcelFile(real_pos)
-    pos_sheet = 'Посылка' if 'Посылка' in xl_pos.sheet_names else xl_pos.sheet_names[0]
-    df_pos = xl_pos.parse(pos_sheet, header=None)
+    # Создаём временную локальную папку на ПК, чтобы вообще не блокировать файлы в сети
+    temp_dir = tempfile.mkdtemp(prefix="pcb_reconcile_")
 
-    xl_plat = pd.ExcelFile(real_pp)
-    plat_sheet = 'СВОДКА' if 'СВОДКА' in xl_plat.sheet_names else xl_plat.sheet_names[0]
-    df_plat = xl_plat.parse(plat_sheet)
+    try:
+        local_pos = copy_to_local_temp(real_pos, temp_dir, "posylka")
+        local_pp = copy_to_local_temp(real_pp, temp_dir, "svodka_pp")
+        local_fil = copy_to_local_temp(real_fil, temp_dir, "svodka_filial")
 
-    xl_fil = pd.ExcelFile(real_fil)
-    fil_sheet = 'ФИЛИАЛ' if 'ФИЛИАЛ' in xl_fil.sheet_names else xl_fil.sheet_names[0]
-    df_filial = xl_fil.parse(fil_sheet)
+        if progress_callback:
+            progress_callback(0.22, "Чтение локальных копий Посылки и сводных таблиц...")
 
-    if progress_callback:
-        progress_callback(0.35, "Поиск последней отгрузки и сбор строк...")
+        with pd.ExcelFile(local_pos) as xl_pos:
+            pos_sheet = 'Посылка' if 'Посылка' in xl_pos.sheet_names else xl_pos.sheet_names[0]
+            df_pos = xl_pos.parse(pos_sheet, header=None)
 
-    # Находим заголовок ПОСЛЕДНЕЙ отгрузки в файле (не трогая историю)
-    last_hdr_row = None
-    for r in range(len(df_pos) - 1, -1, -1):
-        c3 = str(df_pos.iloc[r, 3] if df_pos.shape[1] > 3 and pd.notna(df_pos.iloc[r, 3]) else '')
-        c4 = str(df_pos.iloc[r, 4] if df_pos.shape[1] > 4 and pd.notna(df_pos.iloc[r, 4]) else '')
-        if 'ОТПРАВКА' in c3.upper() or 'ОТПРАВКА' in c4.upper():
-            last_hdr_row = r
-            break
+        with pd.ExcelFile(local_pp) as xl_plat:
+            plat_sheet = 'СВОДКА' if 'СВОДКА' in xl_plat.sheet_names else xl_plat.sheet_names[0]
+            df_plat = xl_plat.parse(plat_sheet)
 
-    if last_hdr_row is None:
-        raise ValueError("Не найден заголовок отгрузки (строка с 'ОТПРАВКА')!")
+        with pd.ExcelFile(local_fil) as xl_fil:
+            fil_sheet = 'ФИЛИАЛ' if 'ФИЛИАЛ' in xl_fil.sheet_names else xl_fil.sheet_names[0]
+            df_filial = xl_fil.parse(fil_sheet)
 
-    header_banner_row = df_pos.iloc[last_hdr_row].tolist()
+        if progress_callback:
+            progress_callback(0.45, "Поиск последней отгрузки и сбор строк...")
 
-    # Собираем сырые строки плат и филиала из хвоста
-    raw_plates, raw_filial = [], []
-    mode = 'plates'
-    for r in range(last_hdr_row + 1, len(df_pos)):
-        row = df_pos.iloc[r].tolist()
-        c1 = row[0] if len(row) > 0 and pd.notna(row[0]) else None
-        c2 = row[1] if len(row) > 1 and pd.notna(row[1]) else None
+        # Находим заголовок ПОСЛЕДНЕЙ отгрузки в файле (не трогая историю)
+        last_hdr_row = None
+        for r in range(len(df_pos) - 1, -1, -1):
+            c3 = str(df_pos.iloc[r, 3] if df_pos.shape[1] > 3 and pd.notna(df_pos.iloc[r, 3]) else '')
+            c4 = str(df_pos.iloc[r, 4] if df_pos.shape[1] > 4 and pd.notna(df_pos.iloc[r, 4]) else '')
+            if 'ОТПРАВКА' in c3.upper() or 'ОТПРАВКА' in c4.upper():
+                last_hdr_row = r
+                break
 
-        if c1 is not None and 'филиал' in str(c1).lower():
-            mode = 'filial'
-            continue
-        if c2 is None or not clean_int_str(c2).isdigit():
-            continue
+        if last_hdr_row is None:
+            raise ValueError("Не найден заголовок отгрузки (строка с 'ОТПРАВКА')!")
 
-        ps_val = int(float(c2))
-        schn_raw = row[3] if len(row) > 3 and pd.notna(row[3]) else 0
-        schn_val = int(float(schn_raw)) if clean_int_str(schn_raw).isdigit() else clean_int_str(schn_raw)
+        header_banner_row = df_pos.iloc[last_hdr_row].tolist()
 
-        pol_raw = row[5] if len(row) > 5 and pd.notna(row[5]) else 0
-        otg_raw = row[6] if len(row) > 6 and pd.notna(row[6]) else 0
+        # Собираем сырые строки плат и филиала из хвоста
+        raw_plates, raw_filial = [], []
+        mode = 'plates'
+        for r in range(last_hdr_row + 1, len(df_pos)):
+            row = df_pos.iloc[r].tolist()
+            c1 = row[0] if len(row) > 0 and pd.notna(row[0]) else None
+            c2 = row[1] if len(row) > 1 and pd.notna(row[1]) else None
 
-        try:
-            pol_val = int(float(str(pol_raw).replace('.', '').strip())) if str(pol_raw).replace('.', '').strip().isdigit() else pol_raw
-        except Exception:
-            pol_val = pol_raw
+            if c1 is not None and 'филиал' in str(c1).lower():
+                mode = 'filial'
+                continue
+            if c2 is None or not clean_int_str(c2).isdigit():
+                continue
 
-        try:
-            otg_val = int(float(str(otg_raw).replace('.', '').strip())) if str(otg_raw).replace('.', '').strip().isdigit() else otg_raw
-        except Exception:
-            otg_val = otg_raw
+            ps_val = int(float(c2))
+            schn_raw = row[3] if len(row) > 3 and pd.notna(row[3]) else 0
+            schn_val = int(float(schn_raw)) if clean_int_str(schn_raw).isdigit() else clean_int_str(schn_raw)
 
-        item = {
-            'orig_idx': r,
-            'Фирма': str(c1).strip() if c1 is not None else '',
-            'PS': ps_val,
-            'Сч/Н': schn_val,
-            'Получено': pol_val,
-            'Отгрузить!': otg_val,
-            'на складе!': row[8] if len(row) > 8 and pd.notna(row[8]) else None,
-            'долг': row[9] if len(row) > 9 and pd.notna(row[9]) else None,
-            'Расходная накладная': row[11] if len(row) > 11 and pd.notna(row[11]) else None,
+            pol_raw = row[5] if len(row) > 5 and pd.notna(row[5]) else 0
+            otg_raw = row[6] if len(row) > 6 and pd.notna(row[6]) else 0
+
+            try:
+                pol_val = int(float(str(pol_raw).replace('.', '').strip())) if str(pol_raw).replace('.', '').strip().isdigit() else pol_raw
+            except Exception:
+                pol_val = pol_raw
+
+            try:
+                otg_val = int(float(str(otg_raw).replace('.', '').strip())) if str(otg_raw).replace('.', '').strip().isdigit() else otg_raw
+            except Exception:
+                otg_val = otg_raw
+
+            item = {
+                'orig_idx': r,
+                'Фирма': str(c1).strip() if c1 is not None else '',
+                'PS': ps_val,
+                'Сч/Н': schn_val,
+                'Получено': pol_val,
+                'Отгрузить!': otg_val,
+                'на складе!': row[8] if len(row) > 8 and pd.notna(row[8]) else None,
+                'долг': row[9] if len(row) > 9 and pd.notna(row[9]) else None,
+                'Расходная накладная': row[11] if len(row) > 11 and pd.notna(row[11]) else None,
+            }
+            if mode == 'plates':
+                raw_plates.append(item)
+            else:
+                raw_filial.append(item)
+
+        if progress_callback:
+            progress_callback(0.7, "Сопоставление заказов со сводками ПП и Филиала...")
+
+        stats = {
+            "total_rows": len(raw_plates) + len(raw_filial),
+            "empty_ps_rows": 0,
+            "already_filled": 0,
+            "matched_head": 0,
+            "matched_filial": 0,
+            "not_found": 0,
+            "duplicates_in_summaries": 0,
+            "conflicts_both_sources": 0,
+            "warnings": [],
+            "row_statuses": {},
+            "source_posylka_path": real_pos,
+            "local_posylka_copy": local_pos,
+            "temp_dir": temp_dir,
+            "last_hdr_row": last_hdr_row,
+            "header_banner_row": header_banner_row,
+            "sorted_plates": [],
+            "sorted_filial": []
         }
-        if mode == 'plates':
-            raw_plates.append(item)
-        else:
-            raw_filial.append(item)
 
-    if progress_callback:
-        progress_callback(0.65, "Сопоставление заказов со сводками ПП и Филиала...")
+        # Обогащаем платы из сводки ПП
+        processed_plates = []
+        for it in raw_plates:
+            firm, sch_pp, po_schetu, deliv = lookup_plate_info(df_plat, it['PS'], it['Сч/Н'])
+            if firm or po_schetu is not None:
+                stats["matched_head"] += 1
+            else:
+                stats["not_found"] += 1
+                stats["warnings"].append(f"Печатные платы: не найден заказ PS {it['PS']} (Сч/Н {it['Сч/Н']})")
 
-    stats = {
-        "total_rows": len(raw_plates) + len(raw_filial),
-        "empty_ps_rows": 0,
-        "already_filled": 0,
-        "matched_head": 0,
-        "matched_filial": 0,
-        "not_found": 0,
-        "duplicates_in_summaries": 0,
-        "conflicts_both_sources": 0,
-        "warnings": [],
-        "row_statuses": {},
-        "source_posylka_path": real_pos,
-        "last_hdr_row": last_hdr_row,
-        "header_banner_row": header_banner_row,
-        "sorted_plates": [],
-        "sorted_filial": []
-    }
+            processed_plates.append({
+                **it,
+                'Фирма': firm or it['Фирма'],
+                'Счет пп   ': sch_pp,
+                'По счету': po_schetu if po_schetu is not None else it['Отгрузить!'],
+                'Этикетка': 'ОТК',
+                'Доставка': deliv
+            })
 
-    # Обогащаем платы из сводки ПП
-    processed_plates = []
-    for it in raw_plates:
-        firm, sch_pp, po_schetu, deliv = lookup_plate_info(df_plat, it['PS'], it['Сч/Н'])
-        if firm or po_schetu is not None:
-            stats["matched_head"] += 1
-        else:
-            stats["not_found"] += 1
-            stats["warnings"].append(f"Печатные платы: не найден заказ PS {it['PS']} (Сч/Н {it['Сч/Н']})")
+        # Обогащаем филиал из сводки ФИЛИАЛ
+        processed_filial = []
+        for it in raw_filial:
+            po_schetu, deliv = lookup_filial_info(df_filial, it['PS'], it['Сч/Н'])
+            if po_schetu is not None:
+                stats["matched_filial"] += 1
+            else:
+                stats["not_found"] += 1
+                stats["warnings"].append(f"Филиал: не найдено количество для PS {it['PS']} (Сч/Н {it['Сч/Н']})")
 
-        processed_plates.append({
-            **it,
-            'Фирма': firm or it['Фирма'],
-            'Счет пп   ': sch_pp,
-            'По счету': po_schetu if po_schetu is not None else it['Отгрузить!'],
-            'Этикетка': 'ОТК',
-            'Доставка': deliv
-        })
+            processed_filial.append({
+                **it,
+                'Счет пп   ': None,
+                'По счету': po_schetu if po_schetu is not None else it['Отгрузить!'],
+                'Этикетка': None,
+                'Доставка': deliv
+            })
 
-    # Обогащаем филиал из сводки ФИЛИАЛ
-    processed_filial = []
-    for it in raw_filial:
-        po_schetu, deliv = lookup_filial_info(df_filial, it['PS'], it['Сч/Н'])
-        if po_schetu is not None:
-            stats["matched_filial"] += 1
-        else:
-            stats["not_found"] += 1
-            stats["warnings"].append(f"Филиал: не найдено количество для PS {it['PS']} (Сч/Н {it['Сч/Н']})")
+        if progress_callback:
+            progress_callback(0.88, "Сортировка: ДМ → СДЭК → К → Самовывоз и группировка фирм...")
 
-        processed_filial.append({
-            **it,
-            'Счет пп   ': None,
-            'По счету': po_schetu if po_schetu is not None else it['Отгрузить!'],
-            'Этикетка': None,
-            'Доставка': deliv
-        })
+        # Сортируем оба блока: ДМ (1) -> СДЭК (2) -> К (3) -> Самовывоз (4), затем фирма к фирме
+        sorted_plates = sorted(
+            processed_plates,
+            key=lambda x: (get_delivery_rank(x['Доставка']), clean_firm_name(x['Фирма']), x['PS'])
+        )
+        sorted_filial = sorted(
+            processed_filial,
+            key=lambda x: (get_delivery_rank(x['Доставка']), clean_firm_name(x['Фирма']), x['PS'])
+        )
 
-    if progress_callback:
-        progress_callback(0.85, "Сортировка: ДМ → СДЭК → К → Самовывоз и группировка фирм...")
+        stats["sorted_plates"] = sorted_plates
+        stats["sorted_filial"] = sorted_filial
 
-    # Сортируем оба блока: ДМ (1) -> СДЭК (2) -> К (3) -> Самовывоз (4), затем фирма к фирме
-    sorted_plates = sorted(
-        processed_plates,
-        key=lambda x: (get_delivery_rank(x['Доставка']), clean_firm_name(x['Фирма']), x['PS'])
-    )
-    sorted_filial = sorted(
-        processed_filial,
-        key=lambda x: (get_delivery_rank(x['Доставка']), clean_firm_name(x['Фирма']), x['PS'])
-    )
+        # Формируем DataFrame для предпросмотра в интерфейсе
+        preview_cols = [
+            'Фирма', 'PS', 'Счет пп   ', 'Сч/Н', 'По счету', 'Получено', 'Отгрузить!',
+            'Этикетка', 'на складе!', 'долг', 'Доставка', 'Расходная накладная'
+        ]
+        preview_rows = []
+        row_statuses = {}
+        r_i = 0
 
-    stats["sorted_plates"] = sorted_plates
-    stats["sorted_filial"] = sorted_filial
-
-    # Формируем DataFrame для предпросмотра в интерфейсе
-    preview_cols = [
-        'Фирма', 'PS', 'Счет пп   ', 'Сч/Н', 'По счету', 'Получено', 'Отгрузить!',
-        'Этикетка', 'на складе!', 'долг', 'Доставка', 'Расходная накладная'
-    ]
-    preview_rows = []
-    row_statuses = {}
-    r_i = 0
-
-    banner_dict = {c: None for c in preview_cols}
-    banner_dict['Сч/Н'] = header_banner_row[3] if len(header_banner_row) > 3 else None
-    banner_dict['По счету'] = header_banner_row[4] if len(header_banner_row) > 4 else None
-    preview_rows.append(banner_dict)
-    row_statuses[r_i] = "banner_date"
-    r_i += 1
-
-    for p in sorted_plates:
-        preview_rows.append({c: p.get(c) for c in preview_cols})
-        row_statuses[r_i] = "samovyvoz_head" if p.get('Доставка') == 'Самовывоз' else "head"
+        banner_dict = {c: None for c in preview_cols}
+        banner_dict['Сч/Н'] = header_banner_row[3] if len(header_banner_row) > 3 else None
+        banner_dict['По счету'] = header_banner_row[4] if len(header_banner_row) > 4 else None
+        preview_rows.append(banner_dict)
+        row_statuses[r_i] = "banner_date"
         r_i += 1
 
-    if sorted_filial:
-        fil_banner = {c: None for c in preview_cols}
-        fil_banner['Фирма'] = 'филиал'
-        preview_rows.append(fil_banner)
-        row_statuses[r_i] = "banner_filial"
-        r_i += 1
-
-        for f in sorted_filial:
-            preview_rows.append({c: f.get(c) for c in preview_cols})
-            row_statuses[r_i] = "samovyvoz_filial" if f.get('Доставка') == 'Самовывоз' else "filial"
+        for p in sorted_plates:
+            preview_rows.append({c: p.get(c) for c in preview_cols})
+            row_statuses[r_i] = "samovyvoz_head" if p.get('Доставка') == 'Самовывоз' else "head"
             r_i += 1
 
-    stats["row_statuses"] = row_statuses
-    df_preview = pd.DataFrame(preview_rows, columns=preview_cols)
+        if sorted_filial:
+            fil_banner = {c: None for c in preview_cols}
+            fil_banner['Фирма'] = 'филиал'
+            preview_rows.append(fil_banner)
+            row_statuses[r_i] = "banner_filial"
+            r_i += 1
 
-    if progress_callback:
-        progress_callback(1.0, "Последняя посылка успешно сведена!")
+            for f in sorted_filial:
+                preview_rows.append({c: f.get(c) for c in preview_cols})
+                row_statuses[r_i] = "samovyvoz_filial" if f.get('Доставка') == 'Самовывоз' else "filial"
+                r_i += 1
 
-    return df_preview, stats
+        stats["row_statuses"] = row_statuses
+        df_preview = pd.DataFrame(preview_rows, columns=preview_cols)
+
+        # Сразу удаляем временные копии сводок, оставляя только локальную копию Посылки для экспорта
+        for f_tmp in (local_pp, local_fil):
+            if os.path.exists(f_tmp):
+                try:
+                    os.remove(f_tmp)
+                except Exception:
+                    pass
+
+        if progress_callback:
+            progress_callback(1.0, "Последняя посылка успешно сведена!")
+
+        return df_preview, stats
+
+    except Exception:
+        cleanup_temp_dir(temp_dir)
+        raise
