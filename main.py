@@ -1,13 +1,15 @@
 import os
 import subprocess
+import tempfile
 import threading
+import uuid
 from datetime import datetime
 import flet as ft
 import pandas as pd
 
 from core.storage import load_settings, save_settings, load_history, add_history_record
 from core.validator import get_file_info
-from core.reconciler import run_reconciliation, resolve_shortcut
+from core.reconciler import run_reconciliation, resolve_shortcut, copy_to_local_temp, cleanup_temp_dir
 from core.excel_exporter import export_to_excel
 
 
@@ -31,6 +33,12 @@ def main(page: ft.Page):
         "last_stats": None,
         "is_processing": False
     }
+
+    def on_window_close(e):
+        if state.get("last_stats") and state["last_stats"].get("temp_dir"):
+            cleanup_temp_dir(state["last_stats"]["temp_dir"])
+
+    page.on_close = on_window_close
 
     def notify(message: str, kind: str = "info"):
         colors = {
@@ -191,7 +199,7 @@ def main(page: ft.Page):
 
     def refresh_file_cards():
         file_cards_container.controls = [
-            build_file_card("1. Накладная (Посылка)", "Заполняется нижняя (незаполненная) посылка: оба блока ПП и Филиал", "posylka_path", pick_posylka_click),
+            build_file_card("1. Накладная (Посылка)", "Читается через локальную копию без блокировки сети", "posylka_path", pick_posylka_click),
             build_file_card("2. Сводка ПП (Голова)", "База заказов головного офиса (ООО Печатные платы)", "pp_path", pick_pp_click),
             build_file_card("3. Сводка Филиала", "База заказов филиала (ЭЛЕКТРОконнект)", "filial_path", pick_filial_click)
         ]
@@ -251,13 +259,17 @@ def main(page: ft.Page):
             notify("Один или несколько файлов не найдены. Проверьте пути к сетевым папкам.", "error")
             return
 
+        # Очищаем старую временную папку перед новым запуском
+        if state.get("last_stats") and state["last_stats"].get("temp_dir"):
+            cleanup_temp_dir(state["last_stats"]["temp_dir"])
+
         state["is_processing"] = True
         btn_reconcile.disabled = True
         btn_save_excel.disabled = True
         progress_bar.visible = True
         progress_bar.value = 0.05
         progress_label.visible = True
-        progress_label.value = "Поиск незаполненной посылки и чтение таблиц..."
+        progress_label.value = "Копирование сетевых файлов в локальный буфер..."
         results_summary_box.visible = False
         warnings_column.controls.clear()
         page.update()
@@ -412,7 +424,7 @@ def main(page: ft.Page):
         spacing=20,
         controls=[
             ft.Text("Сведение накладных", size=26, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
-            ft.Text("Программа находит нижнюю незаполненную посылку (блоки Печатные платы и Филиал) и выгружает готовый Excel-файл", size=14, color=ft.Colors.WHITE_54),
+            ft.Text("Программа копирует сетевые файлы в локальный буфер (не отбирая «первую руку» у сотрудников) и выгружает готовый Excel-файл", size=14, color=ft.Colors.WHITE_54),
             file_cards_container,
             ft.Row([btn_reconcile, btn_save_excel], spacing=15),
             progress_label,
@@ -436,6 +448,21 @@ def main(page: ft.Page):
     preview_table_container = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True)
     preview_info_label = ft.Text("Отображается до 100 строк для быстрого просмотра", size=12, color=ft.Colors.WHITE_54)
 
+    def read_excel_via_local_copy(net_path):
+        resolved = resolve_shortcut(net_path)
+        if not resolved or not os.path.exists(resolved):
+            return None
+        tmp_copy = copy_to_local_temp(resolved, tempfile.gettempdir(), f"preview_{uuid.uuid4().hex[:6]}")
+        try:
+            with pd.ExcelFile(tmp_copy) as xl:
+                return xl.parse(xl.sheet_names[0])
+        finally:
+            if os.path.exists(tmp_copy):
+                try:
+                    os.remove(tmp_copy)
+                except Exception:
+                    pass
+
     def load_preview_data(e=None):
         src = preview_source_dropdown.value
         query = (preview_search.value or "").strip().lower()
@@ -449,17 +476,11 @@ def main(page: ft.Page):
                     page.update()
                     return
             elif src == "posylka":
-                p = resolve_shortcut(state["posylka_path"])
-                if os.path.exists(p):
-                    df = pd.read_excel(p)
+                df = read_excel_via_local_copy(state["posylka_path"])
             elif src == "pp":
-                p = resolve_shortcut(state["pp_path"])
-                if os.path.exists(p):
-                    df = pd.read_excel(p)
+                df = read_excel_via_local_copy(state["pp_path"])
             elif src == "filial":
-                p = resolve_shortcut(state["filial_path"])
-                if os.path.exists(p):
-                    df = pd.read_excel(p)
+                df = read_excel_via_local_copy(state["filial_path"])
 
             if df is None:
                 preview_table_container.controls = [ft.Text("Выбранный файл не найден или не указан.", color=ft.Colors.RED_400)]
@@ -628,12 +649,13 @@ def main(page: ft.Page):
                     spacing=10,
                     controls=[
                         ft.Text("PCB Auto Excel — Автоматическое сведение накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400),
-                        ft.Text("Версия: 2.3 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
+                        ft.Text("Версия: 2.4 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
                         ft.Divider(color="#334155"),
                         ft.Text(
-                            "Программа находит нижнюю незаполненную посылку (оба блока: Печатные платы и Филиал Электроконнект), "
+                            "Программа копирует сетевые таблицы во временный локальный буфер (не блокируя сетевые оригиналы и не отбирая «первую руку» у коллег), "
+                            "находит нижнюю незаполненную посылку (оба блока: Печатные платы и Филиал Электроконнект), "
                             "заполняет «Фирма», «Счет пп», «По счету», «ОТК» и «Доставка» (ДМ, СДЭК, К, Самовывоз), "
-                            "сортирует позиции и сохраняет оформленный Excel-файл с сохранением шапки и истории.",
+                            "сортирует позиции и сохраняет оформленный Excel-файл.",
                             size=14,
                             color=ft.Colors.WHITE_70
                         )
