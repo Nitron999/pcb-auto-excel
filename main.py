@@ -10,6 +10,7 @@ from core.validator import get_file_info
 from core.reconciler import run_reconciliation, resolve_shortcut
 from core.excel_exporter import export_to_excel
 
+
 def main(page: ft.Page):
     settings = load_settings()
 
@@ -77,7 +78,7 @@ def main(page: ft.Page):
             return
         default_name = f"Посылка_СВЕДЕНО_{datetime.now().strftime('%d.%m.%Y_%H-%M')}.xlsx"
         save_dir = settings.get("save_dir", os.path.join(os.path.expanduser("~"), "Desktop"))
-        
+
         try:
             chosen_path = await picker_save_file.save_file(
                 dialog_title="Сохранить сведённую посылку",
@@ -197,7 +198,7 @@ def main(page: ft.Page):
 
     progress_bar = ft.ProgressBar(value=0, color="#3B82F6", bgcolor="#1E293B", visible=False)
     progress_label = ft.Text("", size=13, color=ft.Colors.BLUE_300, visible=False)
-    
+
     results_summary_box = ft.Container(visible=False)
     warnings_column = ft.Column(spacing=5)
 
@@ -207,7 +208,8 @@ def main(page: ft.Page):
                 state["result_df"],
                 out_path,
                 state["last_stats"]["row_statuses"],
-                make_backup=settings.get("backup_results", True)
+                make_backup=settings.get("backup_results", True),
+                stats=state["last_stats"]
             )
             add_history_record({
                 "posylka": os.path.basename(state["posylka_path"]),
@@ -314,7 +316,7 @@ def main(page: ft.Page):
                 )
 
                 if stats["warnings"]:
-                    warnings_column.controls.append(ft.Text("Предупреждения и дубликаты:", weight=ft.FontWeight.BOLD, color=ft.Colors.AMBER_400, size=13))
+                    warnings_column.controls.append(ft.Text("Предупреждения и расхождения:", weight=ft.FontWeight.BOLD, color=ft.Colors.AMBER_400, size=13))
                     for w in stats["warnings"]:
                         warnings_column.controls.append(ft.Text(f"• {w}", color=ft.Colors.AMBER_200, size=12))
 
@@ -626,11 +628,12 @@ def main(page: ft.Page):
                     spacing=10,
                     controls=[
                         ft.Text("PCB Auto Excel — Автоматическое сведение накладных", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400),
-                        ft.Text("Версия: 2.2 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
+                        ft.Text("Версия: 2.3 Commercial Edition (Windows 10 / 11)", size=14, color=ft.Colors.WHITE_70),
                         ft.Divider(color="#334155"),
                         ft.Text(
                             "Программа находит нижнюю незаполненную посылку (оба блока: Печатные платы и Филиал Электроконнект), "
-                            "заполняет «Фирма», «Счет пп», «По счету», «ОТК» и «Доставка» (ДМ, СДЭК, К, Самовывоз) и сохраняет оформленный Excel-файл.",
+                            "заполняет «Фирма», «Счет пп», «По счету», «ОТК» и «Доставка» (ДМ, СДЭК, К, Самовывоз), "
+                            "сортирует позиции и сохраняет оформленный Excel-файл с сохранением шапки и истории.",
                             size=14,
                             color=ft.Colors.WHITE_70
                         )
@@ -694,5 +697,6 @@ def main(page: ft.Page):
             ]
         )
     )
+
 
 ft.run(main)
