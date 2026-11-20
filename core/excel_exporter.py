@@ -1,11 +1,76 @@
 import os
 import shutil
 from datetime import datetime
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=None):
+# ==============================================================================
+# НАСТРОЙКИ СТИЛЕЙ И ОФОРМЛЕНИЯ (СТАНДАРТ ТАБЛИЦЫ ПОСЫЛКИ)
+# ==============================================================================
+FONT_FIRM = Font(name='Tahoma', size=18, bold=True)
+FONT_DATA_BLACK = Font(name='Tahoma', size=16, bold=True, color='000000')
+FONT_DATA_RED = Font(name='Tahoma', size=16, bold=True, color='FF0000')
+FONT_DATA_BLUE = Font(name='Tahoma', size=16, bold=True, color='0000FF')
+FONT_FILIAL_HDR = Font(name='Tahoma', size=18, bold=True, color='FFFFFF')
+
+FILL_SAMOVYVOZ = PatternFill(start_color='FFFFC000', end_color='FFFFC000', fill_type='solid')  # Оранжевый #FFC000
+FILL_OTK = PatternFill(start_color='FFFF99CC', end_color='FFFF99CC', fill_type='solid')        # Розовый #FF99CC
+FILL_FILIAL = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')     # Красный #FF0000
+
+THICK_SIDE = Side(style='thick')
+THICK_BORDER = Border(left=THICK_SIDE, right=THICK_SIDE, top=THICK_SIDE, bottom=THICK_SIDE)
+
+ALIGN_CENTER = Alignment(horizontal='center', vertical='center')
+ALIGN_LEFT = Alignment(horizontal='left', vertical='center')
+
+COLS_ORDER = [
+    'Фирма', 'PS', 'Счет пп   ', 'Сч/Н', 'По счету', 'Получено', 'Отгрузить!',
+    'Этикетка', 'на складе!', 'долг', 'Доставка', 'Расходная накладная'
+]
+
+
+def write_styled_row(ws, row_idx, row_dict):
+    is_samovyvoz = (row_dict.get('Доставка') == 'Самовывоз')
+    ws.row_dimensions[row_idx].height = 28
+
+    for c_idx, col_name in enumerate(COLS_ORDER, start=1):
+        cell = ws.cell(row=row_idx, column=c_idx)
+        val = row_dict.get(col_name)
+        cell.value = val
+        cell.border = THICK_BORDER
+
+        if is_samovyvoz:
+            cell.fill = FILL_SAMOVYVOZ
+
+        if c_idx == 1:  # Фирма
+            cell.font = FONT_FIRM
+            cell.alignment = ALIGN_LEFT
+        else:
+            cell.alignment = ALIGN_CENTER
+            if c_idx == 3:  # Счет пп (4 знака с ведущим нулём)
+                cell.font = FONT_DATA_RED
+                cell.number_format = '@'
+                if val is not None and str(val).strip() != '':
+                    cell.value = str(val).zfill(4)
+            elif c_idx == 7:  # Отгрузить!
+                cell.font = FONT_DATA_RED
+            elif c_idx == 8:  # Этикетка
+                if val and 'ОТК' in str(val):
+                    cell.font = FONT_DATA_BLUE
+                    cell.fill = FILL_OTK
+                else:
+                    cell.font = FONT_DATA_BLACK
+            elif c_idx == 11:  # Доставка
+                d_val = str(val).strip() if val else ''
+                cell.font = FONT_DATA_RED if d_val in ['ДМ', 'К', 'Самовывоз'] else FONT_DATA_BLACK
+            else:
+                cell.font = FONT_DATA_BLACK
+
+
+def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=None, stats=None):
+    """
+    Сохраняет итоговый Excel-файл с полной сохранностью шапки, стилей и структуры листа 'Посылка'.
+    """
     if make_backup and os.path.exists(output_path):
         b_dir = backup_dir if backup_dir else os.path.join(os.path.dirname(output_path), "Backups")
         if not os.path.exists(b_dir):
@@ -14,116 +79,76 @@ def export_to_excel(df, output_path, row_statuses, make_backup=True, backup_dir=
         base_name = os.path.basename(output_path)
         shutil.copy2(output_path, os.path.join(b_dir, f"{ts}_{base_name}"))
 
-    wb = Workbook()
+    # Если передана полная статистика из run_reconciliation, редактируем копию исходной книги с сохранением всех стилей
+    if stats and stats.get("source_posylka_path") and os.path.exists(stats["source_posylka_path"]):
+        wb = openpyxl.load_workbook(stats["source_posylka_path"])
+        ws = wb['Посылка'] if 'Посылка' in wb.sheetnames else wb.active
+
+        last_hdr_row = stats["last_hdr_row"] + 1  # перевод из 0-based pandas в 1-based openpyxl
+        sorted_plates = stats.get("sorted_plates", [])
+        sorted_filial = stats.get("sorted_filial", [])
+
+        # Сохраняем всю строку заголовка целиком (включая жёлтую "Субботняя отгрузка" #FFFF00 и др.)
+        header_snapshot = []
+        for c in range(1, 13):
+            cell = ws.cell(row=last_hdr_row, column=c)
+            header_snapshot.append((
+                c,
+                cell.value,
+                cell.font.copy(),
+                cell.fill.copy(),
+                cell.border.copy(),
+                cell.alignment.copy()
+            ))
+
+        # Очищаем хвост начиная с last_hdr_row и записываем идеально выстроенный блок
+        if ws.max_row >= last_hdr_row:
+            ws.delete_rows(last_hdr_row, ws.max_row - last_hdr_row + 1)
+
+        # 1. Восстанавливаем неприкосновенную шапку даты (сохраняя "Субботняя отгрузка" и цвета)
+        for c, val, fnt, fl, brd, aln in header_snapshot:
+            cell = ws.cell(row=last_hdr_row, column=c)
+            cell.value = val
+            cell.font = fnt
+            cell.fill = fl
+            cell.border = brd
+            cell.alignment = aln
+
+        curr_r = last_hdr_row + 2  # 1 пустая строка после заголовка
+
+        # 2. Записываем платы
+        for p_row in sorted_plates:
+            write_styled_row(ws, curr_r, p_row)
+            curr_r += 1
+
+        if sorted_filial:
+            curr_r += 1  # 1 пустая строка перед плашкой филиал
+
+            # 3. Записываем красную плашку "филиал"
+            ws.row_dimensions[curr_r].height = 28
+            c_fil = ws.cell(row=curr_r, column=1)
+            c_fil.value = 'филиал'
+            c_fil.font = FONT_FILIAL_HDR
+            c_fil.fill = FILL_FILIAL
+            c_fil.border = THICK_BORDER
+            c_fil.alignment = ALIGN_CENTER
+
+            curr_r += 2  # 1 пустая строка после плашки филиал
+
+            # 4. Записываем филиал
+            for f_row in sorted_filial:
+                write_styled_row(ws, curr_r, f_row)
+                curr_r += 1
+
+        wb.save(output_path)
+        return output_path
+
+    # Резервный экспорт, если вызван без stats
+    wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Сведенная посылка"
-
-    # Заливки по образцу
-    fill_header_teal = PatternFill(start_color="008080", end_color="008080", fill_type="solid")
-    fill_header_yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-    fill_filial_banner = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-    fill_samovyvoz_head = PatternFill(start_color="FF99CC", end_color="FF99CC", fill_type="solid")   # Розовый (Печатные платы)
-    fill_samovyvoz_filial = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid") # Оранжевый (Филиал)
-    fill_not_found = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")        # Мягкий персиковый только если PS не найден
-
-    # Шрифты (Calibri 11 Bold)
-    font_header_black = Font(name="Calibri", size=11, bold=True, color="000000")
-    font_header_red = Font(name="Calibri", size=11, bold=True, color="FF0000")
-    font_white_bold = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    font_black_bold = Font(name="Calibri", size=11, bold=True, color="000000")
-    font_red_bold = Font(name="Calibri", size=11, bold=True, color="FF0000")
-    font_blue_bold = Font(name="Calibri", size=11, bold=True, color="0000FF")
-
-    # Жирная чёрная граница для всей таблицы
-    thick_black_border = Border(
-        left=Side(style='medium', color='000000'),
-        right=Side(style='medium', color='000000'),
-        top=Side(style='medium', color='000000'),
-        bottom=Side(style='medium', color='000000')
-    )
-
-    headers = list(df.columns)
-    ws.append(headers)
-    ws.row_dimensions[1].height = 24
-
-    for c_idx, h_name in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=c_idx)
-        cell.border = thick_black_border
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        h_clean = str(h_name).strip()
-        if h_clean in ("Отгрузить!", "на складе!"):
-            cell.fill = fill_header_yellow
-            cell.font = font_header_red if h_clean == "Отгрузить!" else font_header_black
-        else:
-            cell.fill = fill_header_teal
-            cell.font = font_header_black
-
-    col_idx_firma = 1
-    col_idx_schet_pp = next((i + 1 for i, c in enumerate(headers) if "Счет пп" in str(c)), 3)
-    col_idx_otgruzit = next((i + 1 for i, c in enumerate(headers) if "Отгрузить" in str(c)), 7)
-    col_idx_otk = next((i + 1 for i, c in enumerate(headers) if "Этикетка" in str(c)), 8)
-    col_idx_dostavka = next((i + 1 for i, c in enumerate(headers) if "Доставка" in str(c)), 11)
-
-    for df_idx, row_series in df.iterrows():
-        r_idx = df_idx + 2
-        row_vals = [None if str(v) in ('nan', 'None', 'NaT', '') else v for v in row_series.tolist()]
-        ws.append(row_vals)
-        ws.row_dimensions[r_idx].height = 20
-        status = row_statuses.get(df_idx, "")
-
-        for c_idx in range(1, len(row_vals) + 1):
-            cell = ws.cell(row=r_idx, column=c_idx)
-            cell.border = thick_black_border
-
-            # Сохраняем ведущий ноль в "Счет пп" (например, 0682)
-            if c_idx == col_idx_schet_pp and cell.value is not None:
-                val_s = str(cell.value).strip()
-                if val_s.endswith('.0'):
-                    val_s = val_s[:-2]
-                if val_s.isdigit() and len(val_s) < 4:
-                    val_s = val_s.zfill(4)
-                cell.value = val_s
-                cell.number_format = '@'
-
-            if status == "banner_date":
-                cell.font = font_red_bold
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif status == "banner_filial":
-                if c_idx == 1:
-                    cell.fill = fill_filial_banner
-                    cell.font = font_white_bold
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-            else:
-                if status == "samovyvoz_head":
-                    cell.fill = fill_samovyvoz_head
-                elif status == "samovyvoz_filial":
-                    cell.fill = fill_samovyvoz_filial
-                elif status == "not_found":
-                    cell.fill = fill_not_found
-
-                if c_idx == col_idx_firma:
-                    cell.font = font_black_bold
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
-                elif c_idx in (col_idx_schet_pp, col_idx_otgruzit, col_idx_dostavka):
-                    cell.font = font_red_bold
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                elif c_idx == col_idx_otk:
-                    cell.font = font_blue_bold
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    cell.font = font_black_bold
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    ws.freeze_panes = "A2"
-
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val_str = str(cell.value or "")
-            if len(val_str) > max_len:
-                max_len = len(val_str)
-        ws.column_dimensions[col_letter].width = min(max(max_len + 4, 11), 42)
-
+    ws.title = "Посылка"
+    ws.append(COLS_ORDER)
+    for idx, row_series in df.iterrows():
+        write_styled_row(ws, idx + 2, row_series.to_dict())
     wb.save(output_path)
     return output_path
